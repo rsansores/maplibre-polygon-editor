@@ -531,6 +531,89 @@ describe('borders shared with a locked area', () => {
   })
 })
 
+describe('overlapping a locked area', () => {
+  const locked = (): Area => ({ ...area('locked', square(0, 0, 0.01)), locked: true })
+
+  it('trims a drawing against a locked area by default, like any other', async () => {
+    const { editor, issues } = makeEditor()
+    editor.setAreas([locked()])
+    await drawRing(editor, square(0.006, 0, 0.01))
+    expect(issues.map((i) => i.code)).toEqual(['clipped'])
+    expect(editor.getState().areas).toHaveLength(2)
+  })
+
+  it('refuses a drawing over a locked area under forbid, and keeps the drawing', async () => {
+    const { editor, issues, changes } = makeEditor({ lockedOverlap: 'forbid' })
+    editor.setAreas([locked()])
+    await drawRing(editor, square(0.006, 0, 0.01))
+    expect(issues).toEqual([{ code: 'overlap-locked', otherId: 'locked' }])
+    expect(editor.getState().areas).toHaveLength(1)
+    expect(editor.getState().draft).toHaveLength(4)
+    expect(changes).toHaveLength(0)
+  })
+
+  it('still trims a drawing against an unlocked neighbour under forbid', async () => {
+    const { editor, issues } = makeEditor({ lockedOverlap: 'forbid' })
+    editor.setAreas([locked(), area('mine', square(0.02, 0, 0.01))])
+    await drawRing(editor, square(0.026, 0, 0.01))
+    expect(issues.map((i) => i.code)).toEqual(['clipped'])
+    const drawn = editor.getArea('new-1')!
+    expect(polygonArea(drawn.rings) / polygonArea(editor.getArea('mine')!.rings)).toBeCloseTo(0.6, 3)
+  })
+
+  it('refuses a drawing that covers both an unlocked neighbour and a locked area', async () => {
+    const { editor, issues } = makeEditor({ lockedOverlap: 'forbid' })
+    editor.setAreas([locked(), area('mine', square(0.01, 0, 0.01))])
+    await drawRing(editor, [
+      [0.005, 0.005],
+      [0.03, 0.005],
+      [0.03, 0.02],
+      [0.005, 0.02],
+    ])
+    expect(issues.map((i) => i.code)).toEqual(['overlap-locked'])
+    expect(editor.getState().areas).toHaveLength(2)
+  })
+
+  it('accepts a drawing that only touches a locked area along a shared border', async () => {
+    const { editor, issues } = makeEditor({ lockedOverlap: 'forbid' })
+    editor.setAreas([locked()])
+    await drawRing(editor, square(0.01, 0, 0.01))
+    expect(issues).toEqual([])
+    expect(editor.getState().areas).toHaveLength(2)
+  })
+
+  it('refuses an edit that pushes into a locked area under forbid, even when overlaps are allowed', () => {
+    const { editor, issues } = makeEditor({ lockedOverlap: 'forbid', overlap: 'allow' })
+    editor.setAreas([locked(), area('mine', square(0.012, 0, 0.01))])
+    expect(editor.setVertex({ areaId: 'mine', ring: 0, index: 0 }, [0.005, 0])).toBe(false)
+    expect(issues).toEqual([{ code: 'overlap-locked', areaId: 'mine', otherId: 'locked' }])
+  })
+
+  it('lets overlaps with unlocked areas follow the overlap policy under forbid', () => {
+    const { editor } = makeEditor({ lockedOverlap: 'forbid', overlap: 'allow' })
+    editor.setAreas([locked(), area('a', square(0.02, 0, 0.01)), area('b', square(0.032, 0, 0.01))])
+    expect(editor.setVertex({ areaId: 'b', ring: 0, index: 0 }, [0.025, 0])).toBe(true)
+  })
+
+  it('skips imported areas that overlap a locked area under forbid', () => {
+    const { editor, issues } = makeEditor({ lockedOverlap: 'forbid' })
+    editor.setAreas([locked()])
+    expect(
+      editor.addAreas([area('over', square(0.005, 0, 0.01)), area('beside', square(0.01, 0, 0.01))]),
+    ).toBe(1)
+    expect(issues).toEqual([{ code: 'overlap-locked', count: 1 }])
+    expect(editor.getState().areas.map((a) => a.id)).toEqual(['locked', 'beside'])
+  })
+
+  it('switches policy at runtime', async () => {
+    const { editor, issues } = makeEditor({ lockedOverlap: 'forbid' })
+    editor.setAreas([locked()])
+    editor.setLockedOverlapPolicy('clip')
+    await drawRing(editor, square(0.006, 0, 0.01))
+    expect(issues.map((i) => i.code)).toEqual(['clipped'])
+  })
+})
+
 describe('following streets (no router: the network the map draws)', () => {
   // Streets every 0.001° (~111 m), each drawn as one long line, as a map would.
   const S = 0.001

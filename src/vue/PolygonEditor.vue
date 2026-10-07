@@ -4,7 +4,7 @@
 // window's — below `narrowWidth` the panel moves under the map.
 import { onBeforeUnmount, onMounted, ref, toRef } from 'vue'
 import type { Map as MapLibreMap, MapOptions, StyleSpecification } from 'maplibre-gl'
-import type { OverlapPolicy } from '../core/editor'
+import type { LockedOverlapPolicy, OverlapPolicy } from '../core/editor'
 import type { Router } from '../core/trace'
 import type { Area, Position } from '../core/types'
 import type { Geocoder } from '../adapters/geocoding'
@@ -25,6 +25,7 @@ const props = withDefaults(
     mapOptions?: Partial<MapOptions>
     readonly?: boolean
     overlap?: OverlapPolicy
+    lockedOverlap?: LockedOverlapPolicy
     decimals?: number
     geocoder?: Geocoder | null
     router?: Router | null
@@ -42,6 +43,7 @@ const props = withDefaults(
     mapOptions: undefined,
     readonly: false,
     overlap: 'clip',
+    lockedOverlap: 'clip',
     decimals: undefined,
     geocoder: null,
     router: null,
@@ -61,6 +63,7 @@ const editor = usePolygonEditor({
   onUpdate: (next) => (areas.value = next),
   readonly: toRef(props, 'readonly'),
   overlap: toRef(props, 'overlap'),
+  lockedOverlap: toRef(props, 'lockedOverlap'),
   decimals: props.decimals,
   geocoder: toRef(props, 'geocoder'),
   router: toRef(props, 'router'),

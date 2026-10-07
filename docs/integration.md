@@ -79,6 +79,7 @@ width, not the window's) the side panel moves under the map.
 | `geocoder`       | `Geocoder \| null`              | `null`                              | Place search. Pasted coordinates work without one.                                          |
 | `router`         | `Router \| null`                | `null`                              | Replaces the built-in street following with your own service.                               |
 | `overlap`        | `'clip' \| 'forbid' \| 'allow'` | `'clip'`                            | What a new drawing over an existing area does.                                              |
+| `lockedOverlap`  | `'clip' \| 'forbid'`            | `'clip'`                            | Overlaps with a locked area follow `overlap`, or are refused (`forbid`).                    |
 | `decimals`       | `number`                        | `8`                                 | Coordinate precision (8 ≈ 1.1 mm). Fixed at creation.                                       |
 | `readonly`       | `boolean`                       | `false`                             | Show and select only.                                                                       |
 | `locale`         | `string`                        | host's `vue-i18n` locale, else `en` | UI language.                                                                                |
@@ -352,6 +353,25 @@ against for overlaps, but never edited — for example the areas of a neighbouri
 current user may see but not change. A new drawing over a locked area is trimmed against it like
 any other, so the new border matches the locked one exactly.
 
+When ground under a locked area is not the user's to take at all — another owner's areas, shown for
+context — set `lockedOverlap: 'forbid'`. A drawing, an edit or an import that would cover any part
+of a locked area (more than `overlapToleranceM2`) is then refused with `overlap-locked` instead of
+trimmed; the drawing stays on screen to be fixed, and imported areas that overlap are skipped.
+Touching a locked area along a shared border is not an overlap. Overlaps with unlocked areas keep
+following `overlap`, so a drawing over the user's own neighbours is still trimmed to share their
+border:
+
+```ts
+usePolygonEditor({
+  modelValue: areas, // the user's areas, plus another owner's with `locked: true`
+  overlap: 'clip', // own neighbours: trim, share the border
+  lockedOverlap: 'forbid', // locked areas: refuse
+})
+```
+
+The refusal holds under every `overlap` policy, `allow` included. In the core: the `lockedOverlap`
+option and `setLockedOverlapPolicy()`.
+
 Corners and borders an editable area shares with a locked one are **pinned**: they cannot be
 dragged, typed, deleted or split, because the locked side could not follow and the shared border
 would tear. The editor says so (`pinned`) the moment the user tries; the area's other corners stay
@@ -442,6 +462,7 @@ messages cover all of them.
 | `too-few-vertices`    | A ring would have fewer than three corners or enclose nothing.                 |
 | `self-intersection`   | A border would cross or touch itself.                                          |
 | `overlap`             | An edit would make two areas overlap (policy `clip` or `forbid`).              |
+| `overlap-locked`      | A drawing, edit or import over a locked area (`lockedOverlap: 'forbid'`).      |
 | `clipped`             | A new drawing was trimmed to the free ground. Informational.                   |
 | `clipped-split`       | The free ground was in several pieces; the largest was kept.                   |
 | `clipped-away`        | The drawing lies entirely inside existing areas.                               |

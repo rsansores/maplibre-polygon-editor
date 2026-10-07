@@ -101,6 +101,10 @@ On top of that, unless the overlap policy is `allow`, no two areas may share mor
 touching along a border is zero. Checks run only for the areas an edit changed, against areas whose
 bounding boxes touch theirs.
 
+With `lockedOverlap: 'forbid'`, overlapping a locked area by more than the same tolerance is refused
+regardless of the overlap policy: it is checked first, so a drawing over both a locked area and an
+unlocked one is refused rather than trimmed.
+
 A refused edit leaves the state as it was and emits an `issue`. A draft that cannot be finished
 stays on screen.
 

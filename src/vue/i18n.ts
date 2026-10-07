@@ -90,6 +90,7 @@ const en: MessageTable = {
   'issue.too-few-vertices': 'An area needs at least three corners that enclose some ground.',
   'issue.self-intersection': 'The border crosses itself. Move a corner or remove the last one.',
   'issue.overlap': 'Areas cannot overlap. The change was undone.',
+  'issue.overlap-locked': 'The area overlaps a locked area.',
   'issue.clipped':
     'The new area was trimmed to the free ground; it now shares its border with its neighbours.',
   'issue.clipped-split': 'The free ground was in several pieces; the largest was kept.',
@@ -180,6 +181,7 @@ const es: MessageTable = {
   'issue.too-few-vertices': 'Un área necesita al menos tres esquinas que encierren terreno.',
   'issue.self-intersection': 'El borde se cruza consigo mismo. Mueve una esquina o quita la última.',
   'issue.overlap': 'Las áreas no se pueden encimar. Se deshizo el cambio.',
+  'issue.overlap-locked': 'El área se encima con un área bloqueada.',
   'issue.clipped': 'El área nueva se recortó al terreno libre; ahora comparte el borde con sus vecinas.',
   'issue.clipped-split': 'El terreno libre quedó en varios pedazos; se conservó el más grande.',
   'issue.clipped-away': 'El área nueva queda completamente dentro de áreas existentes.',

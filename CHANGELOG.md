@@ -8,6 +8,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `lockedOverlap: 'forbid'`: a drawing, edit or import that would cover a locked area is refused
+  with the new `overlap-locked` issue instead of trimmed, while overlaps with unlocked areas keep
+  following `overlap`. The default, `'clip'`, keeps locked areas under `overlap` as before.
+
 - `permissions`: a host can withhold creating areas (draw, cut, import) and deleting them (delete,
   merge away) without making the editor read-only. Refused with the new `not-allowed` issue; the
   toolbar and the inspector stop offering what is withheld.

@@ -21,6 +21,7 @@ import type { Map as MapLibreMap } from 'maplibre-gl'
 import {
   PolygonEditorCore,
   type EditorState,
+  type LockedOverlapPolicy,
   type Mode,
   type OverlapPolicy,
   type Permissions,
@@ -44,6 +45,8 @@ export interface PolygonEditorOptions {
   /** What the user may do besides reshaping and renaming; see `Permissions`. */
   permissions?: MaybeRefOrGetter<Permissions | undefined>
   overlap?: MaybeRefOrGetter<OverlapPolicy | undefined>
+  /** Overlaps with locked areas: like any other (`'clip'`, default) or refused (`'forbid'`). */
+  lockedOverlap?: MaybeRefOrGetter<LockedOverlapPolicy | undefined>
   /** Decimal places coordinates are rounded to. Fixed for the editor's lifetime. */
   decimals?: number
   /** Place search. Optional: without it the search box still accepts coordinates. */
@@ -88,6 +91,7 @@ export function usePolygonEditor(options: PolygonEditorOptions = {}) {
   const core = new PolygonEditorCore({
     decimals: options.decimals,
     overlap: toValue(options.overlap),
+    lockedOverlap: toValue(options.lockedOverlap),
     readonly: toValue(options.readonly) ?? false,
     permissions: toValue(options.permissions),
     router: toValue(options.router) ?? null,
@@ -138,6 +142,10 @@ export function usePolygonEditor(options: PolygonEditorOptions = {}) {
   watch(
     () => toValue(options.overlap),
     (o) => o && core.setOverlapPolicy(o),
+  )
+  watch(
+    () => toValue(options.lockedOverlap) ?? 'clip',
+    (o) => core.setLockedOverlapPolicy(o),
   )
   watch(
     () => toValue(options.router) ?? null,

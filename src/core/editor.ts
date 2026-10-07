@@ -38,6 +38,16 @@ export type StreetSource = (from: Position, to: Position) => Position[][]
  */
 export type OverlapPolicy = 'clip' | 'forbid' | 'allow'
 
+/**
+ * What happens when an area would cover part of a *locked* one:
+ *
+ * - `clip` (default): nothing special — locked areas follow `overlap` like
+ *   the rest, so a drawing over one is trimmed against it by default.
+ * - `forbid`: the operation is refused with `overlap-locked`, whatever
+ *   `overlap` says. Overlaps with unlocked areas still follow `overlap`.
+ */
+export type LockedOverlapPolicy = 'forbid' | 'clip'
+
 export interface EditorOptions {
   /**
    * Decimal places every coordinate is rounded to. 8 places is about 1.1 mm;
@@ -46,6 +56,8 @@ export interface EditorOptions {
    */
   decimals?: number
   overlap?: OverlapPolicy
+  /** Overlaps with locked areas: like any other (`clip`, default) or refused (`forbid`). */
+  lockedOverlap?: LockedOverlapPolicy
   /** Overlap smaller than this many square metres is numerical noise, not an overlap. */
   overlapToleranceM2?: number
   /**
@@ -171,6 +183,7 @@ export class PolygonEditorCore {
     this.edgeEpsilon = 10 ** -this.decimals
     this.options = {
       overlap: options.overlap ?? 'clip',
+      lockedOverlap: options.lockedOverlap ?? 'clip',
       overlapToleranceM2: options.overlapToleranceM2 ?? 0.01,
       router: options.router ?? null,
       maxDetour: options.maxDetour ?? 3,
@@ -295,6 +308,21 @@ export class PolygonEditorCore {
 
   setOverlapPolicy(policy: OverlapPolicy): void {
     this.options.overlap = policy
+  }
+
+  setLockedOverlapPolicy(policy: LockedOverlapPolicy): void {
+    this.options.lockedOverlap = policy
+  }
+
+  /** Under `lockedOverlap: 'forbid'`, the locked area in `others` that `rings` overlaps, if any. */
+  private lockedOverlapping(rings: readonly Ring[], others: readonly Area[]): Area | null {
+    if (this.options.lockedOverlap !== 'forbid') return null
+    return findOverlap(
+      rings,
+      others.filter((a) => a.locked),
+      this.epsilon,
+      this.options.overlapToleranceM2,
+    )
   }
 
   setSnapping(on: boolean): void {
@@ -681,6 +709,8 @@ export class PolygonEditorCore {
 
     let rings: Ring[] = [ring]
     const others = this.areas
+    const lock = this.lockedOverlapping(rings, others)
+    if (lock) return this.refuse({ code: 'overlap-locked', otherId: lock.id })
     const policy = this.options.overlap
     if (policy !== 'allow') {
       const overlapped = findOverlap(rings, others, this.epsilon, this.options.overlapToleranceM2)
@@ -960,7 +990,11 @@ export class PolygonEditorCore {
     return true
   }
 
-  /** Add areas (an import). Coordinates are rounded; invalid polygons are skipped and reported. */
+  /**
+   * Add areas (an import). Coordinates are rounded; invalid polygons, and
+   * under `lockedOverlap: 'forbid'` areas overlapping a locked one, are
+   * skipped and reported.
+   */
   addAreas(areas: Area[], options: { replace?: boolean } = {}): number {
     if (this.options.readonly) return 0
     if (!this.permissions.create) {
@@ -986,17 +1020,21 @@ export class PolygonEditorCore {
       accepted.push({ ...area, id, rings })
     }
     if (skipped > 0) this.emit('issue', { code: 'import-skipped', count: skipped })
-    if (accepted.length === 0) return 0
     const base = options.replace ? [] : this.areas
+    const locked = [...base, ...accepted].filter((a) => a.locked)
+    const kept = accepted.filter((a) => a.locked || !this.lockedOverlapping(a.rings, locked))
+    if (kept.length < accepted.length)
+      this.emit('issue', { code: 'overlap-locked', count: accepted.length - kept.length })
+    if (kept.length === 0) return 0
     this.commit(
       nodeAreas(
-        [...base, ...accepted],
-        accepted.map((a) => a.id),
+        [...base, ...kept],
+        kept.map((a) => a.id),
         this.edgeEpsilon,
       ),
     )
     this.notify()
-    return accepted.length
+    return kept.length
   }
 
   // ── History ─────────────────────────────────────────────────────────────
@@ -1035,8 +1073,9 @@ export class PolygonEditorCore {
   }
 
   /**
-   * Commit `next` if every area that changed is still valid and, unless
-   * overlaps are allowed, overlaps nothing. Otherwise keep the current state
+   * Commit `next` if every area that changed is still valid, overlaps no
+   * locked area when `lockedOverlap` forbids it and, unless overlaps are
+   * allowed, overlaps nothing. Otherwise keep the current state
    * and report why.
    */
   private tryCommit(next: Area[], alsoCheck: string[] = []): boolean {
@@ -1047,6 +1086,17 @@ export class PolygonEditorCore {
       if (problems.length > 0) {
         this.notify()
         return this.refuse({ code: problems[0]!, areaId: area.id })
+      }
+    }
+    for (const area of changed) {
+      if (area.locked) continue
+      const lock = this.lockedOverlapping(
+        area.rings,
+        next.filter((a) => a.id !== area.id),
+      )
+      if (lock) {
+        this.notify()
+        return this.refuse({ code: 'overlap-locked', areaId: area.id, otherId: lock.id })
       }
     }
     if (this.options.overlap !== 'allow') {

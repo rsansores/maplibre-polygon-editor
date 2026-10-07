@@ -6,6 +6,7 @@ export type {
   EditorEvents,
   EditorOptions,
   EditorState,
+  LockedOverlapPolicy,
   Mode,
   OverlapPolicy,
   Permissions,

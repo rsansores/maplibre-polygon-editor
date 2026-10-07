@@ -55,6 +55,7 @@ export type IssueCode =
   | 'too-few-vertices'
   | 'self-intersection'
   | 'overlap'
+  | 'overlap-locked'
   | 'clipped'
   | 'clipped-away'
   | 'clipped-split'
