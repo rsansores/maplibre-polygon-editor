@@ -32,6 +32,8 @@ const props = withDefaults(
     snapLayers?: MapBindingOptions['snapLayers']
     locale?: string
     messages?: Messages
+    /** Which areas the side panel lists; the others stay on the map. Default: every area. */
+    listed?: (area: Area) => boolean
     /** Show import/export buttons. */
     files?: boolean
     /** Container width (px) below which the panel moves under the map. */
@@ -50,6 +52,7 @@ const props = withDefaults(
     snapLayers: undefined,
     locale: undefined,
     messages: undefined,
+    listed: undefined,
     files: true,
     narrowWidth: 720,
   },
@@ -70,6 +73,7 @@ const editor = usePolygonEditor({
   snapLayers: props.snapLayers,
   locale: toRef(props, 'locale'),
   messages: toRef(props, 'messages'),
+  listed: (area) => props.listed?.(area) ?? true,
 })
 
 const root = ref<HTMLElement>()

@@ -84,6 +84,7 @@ width, not the window's) the side panel moves under the map.
 | `readonly`       | `boolean`                       | `false`                             | Show and select only.                                                                       |
 | `locale`         | `string`                        | host's `vue-i18n` locale, else `en` | UI language.                                                                                |
 | `messages`       | `Messages`                      | —                                   | Override or add strings.                                                                    |
+| `listed`         | `(area: Area) => boolean`       | every area                          | Which areas the side panel lists; the others stay on the map.                               |
 | `files`          | `boolean`                       | `true`                              | Show the import/export buttons.                                                             |
 | `narrowWidth`    | `number`                        | `720`                               | Width below which the panel goes under the map.                                             |
 
@@ -134,7 +135,7 @@ const editor = usePolygonEditor({
 | `PolygonEditorMap`       | Creates a MapLibre map, attaches the editor, draws the overlays. Props: `mapStyle`, `center`, `zoom`, `fitAreas` (default `true`), `mapOptions`, `controls`. |
 | `PolygonEditorOverlays`  | The hint, the measurement readout and the message toast, positioned over a map. Included in `PolygonEditorMap`; place it yourself over a map you own.        |
 | `PolygonEditorToolbar`   | Modes, undo/redo, the snapping/tracing/routing toggles, fit, import/export.                                                                                  |
-| `PolygonEditorAreaList`  | Every area with its colour and size; click selects, double-click zooms.                                                                                      |
+| `PolygonEditorAreaList`  | Every area with its colour and size (only those `listed` accepts); click selects, double-click zooms.                                                        |
 | `PolygonEditorInspector` | The selected area (name, size, perimeter, merge, delete) and the selected corner (exact coordinates).                                                        |
 | `PolygonEditorSearch`    | Place search and coordinate parsing; while drawing, a result can be added as a corner.                                                                       |
 
@@ -152,7 +153,7 @@ form needs is on it:
 | `setSnapping(on)`, `setTracing(on)`, `setFollowRoads(on)`                                  | Helper toggles.                                                                                                                                                         |
 | `select(id)`, `rename(id, name)`, `deleteArea(id)`, `merge(id, otherId)`, `neighbours(id)` | Whole areas.                                                                                                                                                            |
 | `setVertexPosition(position)`, `deleteVertex()`, `addPoint(position)`                      | Exact edits. `addPoint` adds a corner to the current drawing.                                                                                                           |
-| `metrics(area)`, `nameOf(area)`                                                            | Area (m²), perimeter (m), corner count; display name.                                                                                                                   |
+| `metrics(area)`, `nameOf(area)`, `listed(area)`                                            | Area (m²), perimeter (m), corner count; display name; whether the area list shows it.                                                                                   |
 | `goTo(position, bbox?)`, `clearPin()`, `fitAll()`, `fitArea(id)`                           | Camera.                                                                                                                                                                 |
 | `importFile(file)`, `exportGeoJSON(filename?)`, `toGeoJSON()`                              | Files.                                                                                                                                                                  |
 | `attach(map, options?)`, `detach()`, `binding`                                             | Connect your own map (next section).                                                                                                                                    |
@@ -371,6 +372,20 @@ usePolygonEditor({
 
 The refusal holds under every `overlap` policy, `allow` included. In the core: the `lockedOverlap`
 option and `setLockedOverlapPolicy()`.
+
+Areas shown only for context need not crowd the area list either. `listed` decides which areas
+`PolygonEditorAreaList` shows; the rest stay on the map, selectable there. Reactive data the
+function reads is tracked:
+
+```ts
+usePolygonEditor({
+  modelValue: areas,
+  lockedOverlap: 'forbid',
+  listed: (area) => !area.locked, // list the user's areas only
+})
+```
+
+A swatch keeps the colour the map gives the area, whatever is left out.
 
 Corners and borders an editable area shares with a locked one are **pinned**: they cannot be
 dragged, typed, deleted or split, because the locked side could not follow and the shared border

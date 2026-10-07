@@ -8,6 +8,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `listed`: a host can keep areas out of `PolygonEditorAreaList` while they stay on the map — e.g.
+  locked areas shown only for context. Default: every area is listed.
+
 - `lockedOverlap: 'forbid'`: a drawing, edit or import that would cover a locked area is refused
   with the new `overlap-locked` issue instead of trimmed, while overlaps with unlocked areas keep
   following `overlap`. The default, `'clip'`, keeps locked areas under `overlap` as before.

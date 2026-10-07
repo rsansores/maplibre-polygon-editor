@@ -1,6 +1,6 @@
 <script setup lang="ts">
-// Every area, with its colour and size. Selecting one here selects it on the
-// map; a double click also zooms to it.
+// Every listed area (see the `listed` option), with its colour and size.
+// Selecting one here selects it on the map; a double click also zooms to it.
 import { computed } from 'vue'
 import { formatArea } from '../../core/format'
 import { usePolygonEditorContext } from '../usePolygonEditor'
@@ -20,16 +20,23 @@ const PALETTE = [
   '--pe-area-8',
 ]
 
+// The palette index counts every area, listed or not, so a swatch matches the map.
 const rows = computed(() =>
-  editor.areas.value.map((area, i) => ({
-    area,
-    name: editor.nameOf(area),
-    size: formatArea(editor.metrics(area).area, editor.locale()),
-    color:
-      typeof area.properties.color === 'string'
-        ? area.properties.color
-        : `var(${PALETTE[i % PALETTE.length]})`,
-  })),
+  editor.areas.value.flatMap((area, i) =>
+    editor.listed(area)
+      ? [
+          {
+            area,
+            name: editor.nameOf(area),
+            size: formatArea(editor.metrics(area).area, editor.locale()),
+            color:
+              typeof area.properties.color === 'string'
+                ? area.properties.color
+                : `var(${PALETTE[i % PALETTE.length]})`,
+          },
+        ]
+      : [],
+  ),
 )
 </script>
 

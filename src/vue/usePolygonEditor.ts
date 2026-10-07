@@ -62,6 +62,12 @@ export interface PolygonEditorOptions {
   /** Properties of a new area. Default: `{ name: 'Area n' }` in the active language. */
   createProperties?: (index: number) => Record<string, unknown>
   createId?: () => string
+  /**
+   * Which areas `PolygonEditorAreaList` lists. The others stay on the map —
+   * e.g. locked areas shown only for context. Default: every area. Reactive
+   * data the function reads is tracked.
+   */
+  listed?: (area: Area) => boolean
 }
 
 export interface AreaMetrics {
@@ -286,6 +292,8 @@ export function usePolygonEditor(options: PolygonEditorOptions = {}) {
     metrics,
     neighbours,
     nameOf,
+    /** Whether `PolygonEditorAreaList` lists the area; see `PolygonEditorOptions.listed`. */
+    listed: (area: Area) => options.listed?.(area) ?? true,
     /** Whether the area may be deleted or merged away. */
     canDelete: (area: Area) => {
       // Re-read with the state, so a part asking it re-renders when the areas do.
