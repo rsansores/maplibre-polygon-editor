@@ -139,16 +139,31 @@ doubles back — so the editor builds its own network instead, on every click:
    ends within 1.5 m are merged — which also rejoins a street that tile clipping cut in two. The
    result is an undirected graph in local metres.
 3. **Gaps.** Crossings and dead ends up to 80 m apart that no street joins get a straight link at
-   four times the cost per metre: across a river or a highway when the bridge is far, never instead
-   of an ordinary block.
+   four times the cost per metre, shortest first and only where it passes over no street or earlier
+   link: across a river or a highway when the bridge is far, never instead of an ordinary block.
 4. **Attach.** Each click joins the network at the nearest street within 4 m (splitting it), so a
    click on an earlier cut that runs along a street joins too. A click further off is a straight
    segment, by design.
 5. **Search.** Dijkstra, where an edge costs its length × (1 + straightness × its distance from the
-   straight line ÷ the line's length), so the path hugs the line the user meant. Edges that run
-   along the drawing so far are excluded, so a path never doubles back over it.
+   straight line ÷ the line's length), so the path hugs the line the user meant. Edges that touch
+   the drawing so far — run along it, cross it, end on it — are excluded, except along the stretch
+   just drawn (and the first one, closing), which the path may retrace. The drawing's vertices are
+   also seeded into the network first, so a street crossing that is already part of the drawing has
+   exactly the drawing's coordinates — each click builds a fresh network, and without the seeds the
+   same crossing could land a metre away and no longer match.
 6. **Check.** A path longer than `maxDetour` (3×) the straight distance is refused, and the
    segment is straight.
+
+Then the editor fits the path onto the drawing (`settle`): both clicks move onto the street points
+the path actually used (a click half a metre off the street would otherwise make a hairline
+spike), and if the path comes back onto the stretch just drawn — retracing it, or rejoining it at
+an earlier vertex — the loop in between is cut out of both, so a click a little past a corner
+becomes the corner. A straight segment (to a click off the streets) that crosses the stretch just
+drawn ends that stretch at the crossing. Straight links (step 3) are only laid where they pass over
+no street and no other link, so a path cannot cross itself between junctions.
+
+`tests/e2e/follow-roads-stress.spec.ts` draws random areas, city-wide cuts and second cuts on the
+real demo map at three zooms and requires every one to be valid.
 
 A host-supplied `router` replaces steps 1–5. Its route is checked the same way, and one that
 arrives after the drawing was cancelled is dropped (a token per draft).

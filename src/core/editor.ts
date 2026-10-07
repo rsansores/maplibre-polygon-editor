@@ -1,5 +1,5 @@
 import { subtract, unite } from './clip'
-import { dedupeRing, polygonArea, roundPosition, samePosition } from './geo'
+import { dedupeRing, polygonArea, roundPosition, samePosition, segmentIntersection } from './geo'
 import { History } from './history'
 import { splitPolygon } from './split'
 import type { SnapResult } from './snap'
@@ -308,8 +308,8 @@ export class PolygonEditorCore {
    */
   async addPoint(snap: SnapResult): Promise<void> {
     if (this.options.readonly || this.mode === 'select' || this.pending) return
-    const position = this.round(snap.position)
-    const next: SnapResult = { ...snap, position }
+    let position = this.round(snap.position)
+    let next: SnapResult = { ...snap, position }
     const first = this.draft[0]
     const last = this.draft[this.draft.length - 1]
     if (last && samePosition(last.position, position, this.epsilon)) return
@@ -322,9 +322,13 @@ export class PolygonEditorCore {
 
     let via: Position[] = []
     if (last) {
-      const followed = this.followVia(last.snap, next, this.draftPath())
+      const followed = this.followVia(last.snap, next, closing)
       if (followed) {
-        via = followed
+        via = this.settle(followed, closing)
+        if (followed.to && !closing) {
+          position = this.round(followed.to)
+          next = { ...next, position }
+        }
       } else if (
         !closing &&
         this.followRoads &&
@@ -347,11 +351,13 @@ export class PolygonEditorCore {
           this.notify()
           return
         }
-        if (routed) via = this.cleanVia(routed, last.position, position)
+        if (routed) via = this.cleanVia(routed, last.position, position).via
         else this.emit('issue', { code: 'route-fallback' })
       }
     }
 
+    if (via.length === 0 && this.followRoads && this.draft.length >= 2)
+      this.cutStraightLoops(position, closing)
     if (closing) {
       this.finish(via)
       return
@@ -363,10 +369,15 @@ export class PolygonEditorCore {
   /**
    * The vertices between two clicks that are not a straight line: a traced
    * border or street, or — with "follow roads" — the street path closest to
-   * the straight line, never running along `drawn` (the drawing so far).
-   * `null` for a straight segment.
+   * the straight line, never touching `drawn` (the drawing so far). With a
+   * street path, `from` and `to` are where the two clicks joined the streets,
+   * which is where they belong. `null` for a straight segment.
    */
-  private followVia(from: SnapResult, to: SnapResult, drawn: Position[]): Position[] | null {
+  private followVia(
+    from: SnapResult,
+    to: SnapResult,
+    closing: boolean,
+  ): { via: Position[]; from?: Position; to?: Position } | null {
     const following = this.followRoads && this.canFollowRoads
     // Tracing a neighbour's border wins: a shared border must be exact. With
     // "follow roads" on, streets are followed through the whole network
@@ -379,20 +390,187 @@ export class PolygonEditorCore {
       : null
     if (traced && traced.length > 0) return this.cleanVia(traced, from.position, to.position)
     if (!following || this.options.router || !this.streetSource) return null
+    const last = this.draft[this.draft.length - 1]
+    const second = this.draft[1]
     const result = streetPath(this.streetSource(from.position, to.position), from.position, to.position, {
       straightness: this.options.straightness,
       maxDetour: this.options.maxDetour,
-      avoid: drawn,
+      avoid: this.draftPath(),
+      // The stretch just drawn may be retraced, and when closing the first one
+      // too; `settle` trims what was.
+      retraceEnd: this.draft.length >= 2 && last ? last.via.length + 1 : 0,
+      retraceStart: closing && second ? second.via.length + 1 : 0,
     })
-    if ('path' in result) return this.cleanVia(result.path, from.position, to.position)
+    if ('path' in result) {
+      const onStreet = { from: this.round(result.from), to: this.round(result.to) }
+      return { ...this.cleanVia(result.path, onStreet.from, onStreet.to), ...onStreet }
+    }
     // A click off the streets (a field, a forest) is a straight segment by
     // design; only a failure between two street points is worth a word.
     if (result.reason !== 'off-street') this.emit('issue', { code: 'route-fallback' })
     return null
   }
 
+  /**
+   * Fit a followed path onto the drawing. The clicks move onto the streets
+   * where the path joined them; and where the path comes back onto the
+   * stretch just drawn (or, closing, onto the first one), the loop between is
+   * cut out of both — a click a little past a corner becomes the corner.
+   * Returns the vertices that remain between the two clicks.
+   */
+  private settle(
+    followed: { via: Position[]; from?: Position; to?: Position },
+    closing: boolean,
+  ): Position[] {
+    let via = [...followed.via]
+    if (followed.from) this.moveDraftPoint(this.draft.length - 1, followed.from)
+    if (closing && followed.to) this.moveDraftPoint(0, followed.to)
+    if (!followed.from) return via
+    via = this.cutTailLoop(via)
+    if (closing) via = this.cutHeadLoop(via)
+    return via
+  }
+
+  /** The stretch just drawn: the previous click, the vertices between, the last click. */
+  private tail(): Position[] {
+    const n = this.draft.length
+    const last = this.draft[n - 1]
+    if (!last) return []
+    const previous = this.draft[n - 2]
+    return [...(previous ? [previous.position] : []), ...last.via, last.position]
+  }
+
+  /**
+   * `via` leaves the last click; if it comes back onto the stretch just drawn,
+   * end the drawing where it comes back (furthest along `via`) and keep only
+   * what follows.
+   */
+  private cutTailLoop(via: Position[]): Position[] {
+    const tail = this.tail()
+    for (let q = via.length - 1; q >= 0; q--) {
+      const t = tail.findIndex((p) => samePosition(p, via[q]!, this.epsilon))
+      if (t >= 0) {
+        this.endDrawingAt(tail, t)
+        return via.slice(q + 1)
+      }
+    }
+    return via
+  }
+
+  /**
+   * Cut the drawing back to `tail[t]`: the last click moves there, keeping the
+   * stretch before it; at the previous click, the last click goes away. With
+   * `crossing`, the click moves to that point just before `tail[t]` instead.
+   */
+  private endDrawingAt(tail: Position[], t: number, crossing?: Position): void {
+    const n = this.draft.length
+    const last = this.draft[n - 1]!
+    const offset = tail.length - last.via.length - 1 // 1 when there is a previous click
+    const position = crossing ?? tail[t]!
+    if (t === tail.length - 1 && samePosition(position, last.position, this.epsilon)) return
+    if (t < offset && !crossing) {
+      this.draft = this.draft.slice(0, n - 1)
+      return
+    }
+    // tail[offset + k] is last.via[k]; keep the vertices before tail[t].
+    this.draft = [
+      ...this.draft.slice(0, n - 1),
+      {
+        ...last,
+        position,
+        snap: { ...last.snap, position },
+        via: last.via.slice(0, Math.max(0, t - offset)),
+      },
+    ]
+  }
+
+  /** The first stretch: the first click, the vertices between, the second click. */
+  private head(): Position[] {
+    const [first, second] = [this.draft[0], this.draft[1]]
+    if (!first || !second) return first ? [first.position] : []
+    return [first.position, ...second.via, second.position]
+  }
+
+  /**
+   * Closing: `via` arrives at the first click; if it reaches the first stretch
+   * earlier, start the drawing where it does (earliest along `via`) and keep
+   * only what comes before.
+   */
+  private cutHeadLoop(via: Position[]): Position[] {
+    const head = this.head()
+    for (let q = 0; q < via.length; q++) {
+      const h = head.findIndex((p) => samePosition(p, via[q]!, this.epsilon))
+      if (h >= 0) {
+        this.startDrawingAt(head, h)
+        return via.slice(0, q)
+      }
+    }
+    return via
+  }
+
+  /** Move the first click forward to `head[h]` (or `position`, on the stretch after it). */
+  private startDrawingAt(head: Position[], h: number, position = head[h]!): void {
+    const [first, second] = [this.draft[0]!, this.draft[1]]
+    if (!second || (h === 0 && samePosition(position, first.position, this.epsilon))) return
+    if (h === head.length - 1 && samePosition(position, second.position, this.epsilon)) {
+      this.draft = [{ ...second, via: [] }, ...this.draft.slice(2)]
+      return
+    }
+    // head[1 + k] is second.via[k]; keep the vertices after head[h].
+    this.draft = [
+      { ...first, position, snap: { ...first.snap, position } },
+      { ...second, via: second.via.slice(h) },
+      ...this.draft.slice(2),
+    ]
+  }
+
+  /**
+   * A straight segment from the last click to `to` that crosses the stretch
+   * just drawn (a followed path that overshot the click) makes a loop; end the
+   * drawing at the crossing instead. Closing, do the same at the first stretch.
+   */
+  private cutStraightLoops(to: Position, closing: boolean): void {
+    const tail = this.tail()
+    const from = tail[tail.length - 1]
+    if (from && tail.length >= 3) {
+      for (let i = 0; i + 2 < tail.length; i++) {
+        const hit = segmentIntersection(from, to, tail[i]!, tail[i + 1]!)
+        if (hit && hit.t > 0 && hit.t < 1 && hit.u > 0 && hit.u < 1) {
+          this.endDrawingAt(tail, i + 1, this.round(hit.point))
+          break
+        }
+      }
+    }
+    if (!closing) return
+    const head = this.head()
+    const last = this.draft[this.draft.length - 1]
+    if (!last || head.length < 3) return
+    for (let i = head.length - 2; i >= 1; i--) {
+      const hit = segmentIntersection(last.position, head[0]!, head[i]!, head[i + 1]!)
+      if (hit && hit.t > 0 && hit.t < 1 && hit.u > 0 && hit.u < 1) {
+        this.startDrawingAt(head, i, this.round(hit.point))
+        break
+      }
+    }
+  }
+
+  /**
+   * Put draft point `index` at `position` (a click moving onto the street it
+   * was meant to be on, at most a few metres), dropping vertices of its
+   * incoming segment that now repeat it.
+   */
+  private moveDraftPoint(index: number, position: Position): void {
+    const at = this.round(position)
+    this.draft = this.draft.map((d, i) => {
+      if (i !== index || samePosition(d.position, at, this.epsilon)) return d
+      const via = [...d.via]
+      while (via.length > 0 && samePosition(via[via.length - 1]!, at, this.epsilon)) via.pop()
+      return { position: at, snap: { ...d.snap, position: at }, via }
+    })
+  }
+
   /** Rounded intermediate vertices, without repeats or copies of the two clicks. */
-  private cleanVia(path: Position[], from: Position, to: Position): Position[] {
+  private cleanVia(path: Position[], from: Position, to: Position): { via: Position[] } {
     const out: Position[] = []
     for (const raw of path) {
       const p = this.round(raw)
@@ -400,7 +578,7 @@ export class PolygonEditorCore {
       if (samePosition(p, previous, this.epsilon) || samePosition(p, to, this.epsilon)) continue
       out.push(p)
     }
-    return out
+    return { via: out }
   }
 
   /** Undo the last click of the draft (with whatever it traced). */
@@ -430,13 +608,13 @@ export class PolygonEditorCore {
     if (this.mode === 'draw') {
       const first = this.draft[0]
       const last = this.draft[this.draft.length - 1]
-      const closing =
-        closingVia ??
-        (first && last && this.draft.length >= 3
-          ? this.followVia(last.snap, first.snap, this.draftPath())
-          : null) ??
-        []
-      ok = this.finishArea(closing)
+      let closing = closingVia
+      if (!closing && first && last && this.draft.length >= 3) {
+        const followed = this.followVia(last.snap, first.snap, true)
+        if (followed) closing = this.settle(followed, true)
+        else if (this.followRoads) this.cutStraightLoops(first.position, true)
+      }
+      ok = this.finishArea(closing ?? [])
     } else if (this.mode === 'cut') {
       ok = this.finishCut()
     }

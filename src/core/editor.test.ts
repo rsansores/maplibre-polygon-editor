@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { area, free, square } from '../test-support/fixtures'
 import { PolygonEditorCore, type EditorOptions } from './editor'
 import { polygonArea } from './geo'
+import { polygonIssues } from './validate'
 import { linkedVertices } from './topology'
 import type { SnapResult } from './snap'
 import type { Area, Issue, Position } from './types'
@@ -612,21 +613,45 @@ describe('following streets (no router: the network the map draws)', () => {
     expect(issues).toEqual([])
   })
 
-  it('never doubles back along what it just drew', async () => {
+  it('turns a click a little past a corner into the corner, never doubling back', async () => {
     const { editor } = makeEditor()
     editor.setStreetSource(() => streets())
     editor.setFollowRoads(true)
     editor.setMode('draw')
-    // The second click is just past a corner: the nearest way north is back
-    // west along the street just drawn, which would leave a spike. It goes on
-    // east to the next corner instead.
+    // The second click is ~22 m past the corner at x = 4S. The only way north
+    // from there that stays near the line is back to that corner — so the
+    // corner is where the border turns, and the click moves there.
     await editor.addPoint(street([0.5 * S, S]))
     await editor.addPoint(street([4.2 * S, S]))
     await editor.addPoint(street([4.2 * S, 4 * S]))
     const path = editor.draftPath()
     const keys = path.map((p) => `${p[0].toFixed(7)},${p[1].toFixed(7)}`)
     expect(new Set(keys).size).toBe(keys.length)
-    expect(path.some((p) => Math.abs(p[0] - 5 * S) < 1e-9 && Math.abs(p[1] - S) < 1e-9)).toBe(true)
+    const second = editor.getState().draft[1]!.position
+    expect(second[0]).toBeCloseTo(4 * S, 9)
+    expect(second[1]).toBeCloseTo(S, 9)
+    // Nothing of the drawing lies east of the corner but the last click.
+    expect(path.slice(0, -1).every((p) => p[0] <= 4 * S + 1e-9)).toBe(true)
+  })
+
+  it('never leaves a drawing that crosses itself, whatever the clicks', async () => {
+    // A tight zig-zag of street clicks and free clicks: each path may come
+    // back onto the stretch before it, or a straight segment may cross it.
+    const clicks: [Position, boolean][] = [
+      [[0.5 * S, S], true],
+      [[3 * S, 2.5 * S], true],
+      [[2 * S, 0.5 * S], false],
+      [[4.5 * S, 1.2 * S], false],
+      [[4 * S, 4 * S], true],
+      [[S, 3.5 * S], true],
+    ]
+    const { editor } = makeEditor()
+    editor.setStreetSource(() => streets())
+    editor.setFollowRoads(true)
+    editor.setMode('draw')
+    for (const [p, onStreet] of clicks) await editor.addPoint(onStreet ? street(p) : free(p))
+    expect(polygonIssues([editor.draftPath()], editor.epsilon)).not.toContain('self-intersection')
+    expect(editor.finish()).toBe(true)
   })
 
   it('closes the area along the streets too', async () => {

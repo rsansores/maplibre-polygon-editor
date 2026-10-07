@@ -276,8 +276,15 @@ then follows the streets the map is drawing, with no service involved:
 - **As close as possible to the straight line** between the two clicks. Among street paths, the
   one that hugs the line wins over a shorter one further away; `straightness` (default 4) sets how
   strongly.
-- **Never back over itself.** The path may not run along the drawing so far, so a click just past
-  a corner does not leave a spike.
+- **Never touching itself.** The path may not run along, cross or pass through the drawing so
+  far. The one exception is the stretch just drawn (and, closing, the first one): a click a little
+  past a corner can only be left the way it was reached, so the path may go back to the corner —
+  and that retraced bit is cut from both, so the click _becomes_ the corner. Likewise a straight
+  segment to a free click that would cross the stretch just drawn ends that stretch where they
+  cross.
+- **Clicks sit on the street.** With follow roads on, a click on a street moves onto the street as
+  the path follows it (at most 4 m); a border that stepped off the street to the exact pixel and
+  back would be a spike.
 - **Straight across gaps.** Street crossings up to 80 m apart that no street joins — the two banks
   of a river, the two sides of a highway — may be joined by a straight line, at four times the cost
   of a street. In an ordinary grid a street is always cheaper; a long detour to a distant bridge is

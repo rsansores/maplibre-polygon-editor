@@ -91,10 +91,14 @@ describe('streetPath', () => {
     expect(path.length).toBeGreaterThan(0)
   })
 
-  it('takes a point near a street onto the street, keeping the point itself as the end', () => {
+  it('reports where a point near a street joined it, so the point can move onto it', () => {
     // 2 m off the street at y = S.
-    const path = ok(streetPath(grid(), [0.0005, S + 0.000018], [0.0025, S]))
-    expect(path[0]).toEqual([0.0005, S])
+    const result = streetPath(grid(), [0.0005, S + 0.000018], [0.0025, S])
+    if (!('path' in result)) throw new Error(result.reason)
+    expect(result.from[0]).toBeCloseTo(0.0005, 9)
+    expect(result.from[1]).toBeCloseTo(S, 9)
+    // The path runs from there, not from the point off the street.
+    expect(ok(result)[0]).toEqual([S, S])
   })
 
   it('says when a point is off the streets', () => {
@@ -127,7 +131,7 @@ describe('streetPath', () => {
     ]
     expect(streetPath(lines, [0, 0], [0.0003, 0], { gapMetres: 0 })).toEqual({ reason: 'detour' })
     // With straight crossings (the default) the two ends are simply joined.
-    expect(streetPath(lines, [0, 0], [0.0003, 0])).toEqual({ path: [] })
+    expect(ok(streetPath(lines, [0, 0], [0.0003, 0]))).toEqual([])
   })
   it('does not run along a path it is told to avoid', () => {
     // From a point just past the corner (x = 2S) on y = S, going north: the
@@ -196,5 +200,25 @@ describe('streetPath', () => {
       // Every leg runs along a street: horizontal or vertical, never diagonal.
       expect(Math.abs(a[0] - b[0]) < 1e-9 || Math.abs(a[1] - b[1]) < 1e-9).toBe(true)
     }
+  })
+  it('never lays a straight crossing over a street', () => {
+    // Two dead ends 55 m apart with a street running between them that joins
+    // neither: a straight link would pass over that street without a junction.
+    const lines: Position[][] = [
+      [
+        [0, -2 * S],
+        [0, 0],
+      ],
+      [
+        [0.0005, 0],
+        [0.0005, -2 * S],
+      ],
+      [
+        [0.00025, -S],
+        [0.00025, S],
+      ],
+    ]
+    const result = streetPath(lines, [0, -S], [0.0005, -S])
+    expect('path' in result).toBe(false)
   })
 })

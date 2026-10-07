@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { sortedVertices, square } from '../test-support/fixtures'
+import recorded from '../test-support/cut-along-border.json'
 import { polygonArea } from './geo'
 import { splitPolygon } from './split'
-import type { Position } from './types'
+import type { Position, Ring } from './types'
 
 const EPS = 5e-9
 const D = 8
+const square01 = () => square(0, 0, 0.01)
 
 describe('splitPolygon', () => {
   const box = square(0, 0, 0.01)
@@ -129,5 +131,41 @@ describe('splitPolygon', () => {
     if (!('pieces' in result)) throw new Error(result.issue)
     const [a, b] = result.pieces
     expect(polygonArea(a) + polygonArea(b)).toBeCloseTo(polygonArea([box]), 3)
+  })
+})
+
+describe('cuts that start along the border', () => {
+  it('skips a first stretch that runs along the border and cuts where the line goes inside', () => {
+    // Recorded on the demo map: a second cut that starts on the first cut and
+    // follows its street for one block before turning into the area.
+    const { areas, path } = recorded as unknown as {
+      areas: { id: string; rings: Ring[] }[]
+      path: Position[]
+    }
+    const area = areas.find((a) => a.id !== 'city')!
+    const result = splitPolygon(area.rings, path, 8, 5e-9)
+    if (!('pieces' in result)) throw new Error(result.issue)
+    const total = polygonArea(area.rings)
+    expect(polygonArea(result.pieces[0]) + polygonArea(result.pieces[1])).toBeCloseTo(total, -2)
+  })
+
+  it('does the same on a square', () => {
+    // From the corner (0.01, 0) up the right edge to (0.01, 0.004), then across.
+    const result = splitPolygon(
+      [square01()],
+      [
+        [0.01, 0],
+        [0.01, 0.004],
+        [0.004, 0.004],
+        [0.004, 0.011],
+      ],
+      D,
+      EPS,
+    )
+    if (!('pieces' in result)) throw new Error(result.issue)
+    expect(polygonArea(result.pieces[0]) + polygonArea(result.pieces[1])).toBeCloseTo(
+      polygonArea([square01()]),
+      3,
+    )
   })
 })

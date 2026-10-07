@@ -12,7 +12,9 @@ All notable changes to this project are documented here. The format follows
   any direction, as close as possible to the straight line between two clicks, never doubling back
   over the drawing, and crossing rivers or highways straight when the nearest bridge is far. Clicks
   on an earlier border that lies on a street join the network, so a city can be cut again and again
-  along its streets; closing an area follows the streets back to its first corner.
+  along its streets; closing an area follows the streets back to its first corner. The border never
+  touches itself: a click a little past a corner becomes the corner, and clicks sit on the street
+  the path follows.
 - `PolygonEditorCore`: a framework-agnostic editor for sets of polygons whose shared borders stay
   shared — draw, cut, merge, drag, insert and delete corners, typed coordinates, undo/redo.
 - Snapping to corners, borders and basemap streets; tracing along a border or street between two

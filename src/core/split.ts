@@ -1,4 +1,4 @@
-import { dedupeRing, pointInRing, roundPosition, segmentIntersection, segmentsCross } from './geo'
+import { dedupeRing, onSegment, pointInRing, roundPosition, segmentIntersection, segmentsCross } from './geo'
 import { walkForward, type RingPosition } from './topology'
 import type { IssueCode, Position, Ring } from './types'
 
@@ -46,26 +46,35 @@ export function splitPolygon(
   const unique = crossings.filter((c, i) => i === 0 || c.along - crossings[i - 1]!.along > 1e-12)
   if (unique.length < 2) return { issue: 'cut-missed' }
 
-  // Take the first stretch of the line that runs inside the polygon.
-  let entry: Crossing | undefined
-  let exit: Crossing | undefined
+  // Take the first stretch of the line that runs through the inside of the
+  // polygon. A stretch along the border itself (a cut that starts by
+  // following an earlier cut's street) is neither inside nor a cut: skip it.
   for (let i = 0; i + 1 < unique.length; i++) {
-    const a = unique[i]!
-    const b = unique[i + 1]!
-    if (pointInRing(pointAlong(line, (a.along + b.along) / 2), outer)) {
-      entry = a
-      exit = b
-      break
-    }
+    const entry = unique[i]!
+    const exit = unique[i + 1]!
+    const middle = pointAlong(line, (entry.along + exit.along) / 2)
+    if (onRing(middle, outer, epsilon * 10) || !pointInRing(middle, outer)) continue
+    const result = piecesFor(rings, line, entry, exit, decimals, epsilon)
+    if (result) return result
   }
-  if (!entry || !exit) return { issue: 'cut-missed' }
+  return { issue: 'cut-missed' }
+}
 
+function piecesFor(
+  rings: readonly Ring[],
+  line: readonly Position[],
+  entry: Crossing,
+  exit: Crossing,
+  decimals: number,
+  epsilon: number,
+): SplitResult | null {
+  const outer = rings[0]!
   const round = (p: Position) => roundPosition(p, decimals)
   const start = round(entry.point)
   const end = round(exit.point)
   const inner = line.slice(Math.floor(entry.along) + 1, Math.floor(exit.along) + 1).map(round)
 
-  // The cut must not cross a hole, nor the outer ring again in between.
+  // The cut must not cross a hole.
   const cut = [start, ...inner, end]
   for (const hole of rings.slice(1)) {
     if (crossesRing(cut, hole)) return { issue: 'cut-crosses-hole' }
@@ -76,12 +85,16 @@ export function splitPolygon(
     [end, ...[...inner].reverse(), start, ...walkForward(outer, entry.at, exit.at)],
     epsilon,
   )
-  if (a.length < 3 || b.length < 3) return { issue: 'cut-missed' }
+  if (a.length < 3 || b.length < 3) return null
 
   const piecesA: Ring[] = [a]
   const piecesB: Ring[] = [b]
   for (const hole of rings.slice(1)) (pointInRing(hole[0]!, a) ? piecesA : piecesB).push(hole)
   return { pieces: [piecesA, piecesB] }
+}
+
+function onRing(p: Position, ring: Ring, epsilon: number): boolean {
+  return ring.some((a, i) => onSegment(p, a, ring[(i + 1) % ring.length]!, epsilon))
 }
 
 function pointAlong(line: readonly Position[], along: number): Position {

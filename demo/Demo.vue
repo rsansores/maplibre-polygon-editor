@@ -2,7 +2,7 @@
 import { computed, defineAsyncComponent, nextTick, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { Map as MapLibreMap } from 'maplibre-gl'
-import { PolygonEditor, photonGeocoder, type Area } from '../src'
+import { PolygonEditor, photonGeocoder, snap, type Area } from '../src'
 import { basemapStyle, DEMO_BOUNDS, DEMO_CENTER, streetLayers } from './basemap'
 import { sampleAreas } from './sample'
 
@@ -38,7 +38,7 @@ const editorRef = ref<InstanceType<typeof PolygonEditor>>()
 
 // A handle for the browser tests and for poking at the editor from devtools.
 function onReady(map: MapLibreMap) {
-  ;(window as unknown as { __demo: unknown }).__demo = { map, editor: editorRef.value?.editor }
+  ;(window as unknown as { __demo: unknown }).__demo = { map, editor: editorRef.value?.editor, snap }
 }
 watch(
   dark,

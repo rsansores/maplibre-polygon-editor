@@ -1,4 +1,4 @@
-import { distance, pathLength, segmentIntersection } from './geo'
+import { distance, pathLength, segmentIntersection, segmentsCross } from './geo'
 import type { Position } from './types'
 
 /**
@@ -44,15 +44,32 @@ export interface StreetPathOptions {
    */
   gapCost?: number
   /**
-   * A path already drawn (the rest of the drawing). The new path may not run
-   * along it, so a drawing never doubles back on itself.
+   * The drawing so far. The new path may not touch it — run along it, cross
+   * it, or pass through one of its points — so a border never touches itself.
+   * Its vertices also anchor the network: a street crossing within
+   * `joinMetres` of one takes its exact coordinates, so the new path meets
+   * the drawing exactly where the drawing is.
    */
   avoid?: readonly Position[]
+  /**
+   * How many of `avoid`'s last segments the path may run back along (the
+   * stretch just drawn), and how many of its first ones (the first stretch,
+   * when closing). A click a little past a corner can only be left the way it
+   * was reached; the caller trims what is retraced. Default 0.
+   */
+  retraceEnd?: number
+  retraceStart?: number
 }
 
 export type StreetPathResult =
-  /** Intermediate vertices between the two points (both excluded). */
-  | { path: Position[] }
+  /**
+   * Intermediate vertices between the two points, and where each point
+   * joined the streets. A point a little off a street (the map's street and
+   * the network's can differ by a metre, where nearby ends were merged) is
+   * meant to be on it: use `from` and `to` in place of the points, or the
+   * border steps off the street and back — a spike.
+   */
+  | { path: Position[]; from: Position; to: Position }
   /** One of the points is not on a street: the segment is straight by design. */
   | { reason: 'off-street' }
   /** Both are on streets, but no plausible street path joins them. */
@@ -140,9 +157,15 @@ export class StreetNetwork {
     lines: readonly (readonly Position[])[],
     origin: Position,
     private readonly join: number,
+    /** Positions nodes snap to, so the network shares them exactly (the drawing's vertices). */
+    anchors: readonly Position[] = [],
   ) {
     this.toLocal = projector(origin)
     this.nodeGrid = new Grid<number>(Math.max(join * 4, 1))
+    for (const p of anchors) {
+      const [x, y] = this.toLocal(p)
+      this.nodeAt(p, x, y)
+    }
 
     const segments: Segment[] = []
     const segGrid = new Grid<number>(60)
@@ -245,6 +268,7 @@ export class StreetNetwork {
     const ends = this.nodes.map((n, i) => (n.edges.length !== 2 ? i : -1)).filter((i) => i >= 0)
     const grid = new Grid<number>(gap)
     for (const i of ends) grid.add(i, this.nodes[i]!.x, this.nodes[i]!.y, this.nodes[i]!.x, this.nodes[i]!.y)
+    const candidates: [number, number, number][] = []
     for (const i of ends) {
       const n = this.nodes[i]!
       const linked = new Set(
@@ -253,8 +277,35 @@ export class StreetNetwork {
       for (const j of grid.near(n.x - gap, n.y - gap, n.x + gap, n.y + gap)) {
         if (j <= i || linked.has(j)) continue
         const m = this.nodes[j]!
-        if (Math.hypot(n.x - m.x, n.y - m.y) <= gap) this.connect(i, j, cost)
+        const d = Math.hypot(n.x - m.x, n.y - m.y)
+        if (d <= gap) candidates.push([d, i, j])
       }
+    }
+    // Shortest first; a link that would pass over a street (or an earlier
+    // link) is refused — the path would cross it without a junction, and a
+    // border that crosses itself is invalid. Crossing there means using the
+    // street's own junction instead.
+    candidates.sort((x, y) => x[0] - y[0])
+    for (const [, i, j] of candidates) {
+      const a = this.nodes[i]!
+      const b = this.nodes[j]!
+      let clear = true
+      for (const e of this.edgeGrid.near(
+        Math.min(a.x, b.x),
+        Math.min(a.y, b.y),
+        Math.max(a.x, b.x),
+        Math.max(a.y, b.y),
+      )) {
+        const edge = this.edges[e]!
+        if (edge.a === i || edge.a === j || edge.b === i || edge.b === j) continue
+        const c = this.nodes[edge.a]!
+        const d = this.nodes[edge.b]!
+        if (segmentsCross([a.x, a.y], [b.x, b.y], [c.x, c.y], [d.x, d.y])) {
+          clear = false
+          break
+        }
+      }
+      if (clear) this.connect(i, j, cost)
     }
   }
 
@@ -334,42 +385,71 @@ class Heap {
 }
 
 /**
- * Edges that run along `avoid` (their middle lies on it), except the ones
- * touching the two endpoints — the path has to leave from and arrive at the
- * drawing.
+ * Edges the path may not use: any that touches the drawing so far (`avoid`)
+ * — runs along it, crosses it, or passes through one of its points — except
+ * at the nodes in `exempt` (the two ends and where they joined the streets),
+ * and except along the stretches of the drawing in `open` (segment index
+ * ranges the path may retrace). A border that touched itself anywhere else
+ * would be invalid.
  */
 function blockedEdges(
   network: StreetNetwork,
   avoid: readonly Position[],
   join: number,
-  start: number,
-  goal: number,
+  exempt: ReadonlySet<number>,
+  open: (k: number) => boolean,
 ): Uint8Array {
   const blocked = new Uint8Array(network.edges.length)
   if (avoid.length < 2) return blocked
+  // `grid` holds the stretches the path may not touch; `all` every stretch —
+  // retracing runs along an open one, it never crosses it.
   const grid = new Grid<number>(60)
+  const all = new Grid<number>(60)
   const pts = avoid.map((p) => network.toLocal(p))
   for (let i = 0; i + 1 < pts.length; i++) {
     const [ax, ay] = pts[i]!
     const [bx, by] = pts[i + 1]!
-    grid.add(
-      i,
+    const box = [
       Math.min(ax, bx) - join,
       Math.min(ay, by) - join,
       Math.max(ax, bx) + join,
       Math.max(ay, by) + join,
-    )
+    ] as const
+    all.add(i, ...box)
+    if (!open(i)) grid.add(i, ...box)
   }
-  network.edges.forEach((edge, e) => {
-    if (edge.a === start || edge.b === start || edge.a === goal || edge.b === goal) return
-    const a = network.nodes[edge.a]!
-    const b = network.nodes[edge.b]!
-    const mx = (a.x + b.x) / 2
-    const my = (a.y + b.y) / 2
-    for (const i of grid.near(mx, my, mx, my)) {
+  // A drawn point shared by an open and a closed stretch (where retracing
+  // must stop) is still reachable: it is where the path turns away.
+  const nearDrawing = (x: number, y: number) => {
+    for (const i of grid.near(x, y, x, y)) {
       const [ax, ay] = pts[i]!
       const [bx, by] = pts[i + 1]!
-      if (paramOn(mx, my, { ax, ay, bx, by } as Segment).d <= join) {
+      const { t, d } = paramOn(x, y, { ax, ay, bx, by } as Segment)
+      if (d > join) continue
+      if ((t === 0 && i > 0 && open(i - 1)) || (t === 1 && open(i + 1))) continue
+      return true
+    }
+    return false
+  }
+  const nodeBlocked = network.nodes.map((n, i) => !exempt.has(i) && nearDrawing(n.x, n.y))
+  network.edges.forEach((edge, e) => {
+    if (nodeBlocked[edge.a] || nodeBlocked[edge.b]) {
+      blocked[e] = 1
+      return
+    }
+    const a = network.nodes[edge.a]!
+    const b = network.nodes[edge.b]!
+    if (!(exempt.has(edge.a) && exempt.has(edge.b)) && nearDrawing((a.x + b.x) / 2, (a.y + b.y) / 2)) {
+      blocked[e] = 1
+      return
+    }
+    for (const i of all.near(
+      Math.min(a.x, b.x),
+      Math.min(a.y, b.y),
+      Math.max(a.x, b.x),
+      Math.max(a.y, b.y),
+    )) {
+      if (segmentsCross([a.x, a.y], [b.x, b.y], pts[i]!, pts[i + 1]!)) {
         blocked[e] = 1
         return
       }
@@ -400,13 +480,30 @@ export function streetPath(
   const straightness = options.straightness ?? 4
   const maxDetour = options.maxDetour ?? 3
 
-  const network = new StreetNetwork(lines, from, join)
+  const avoid = options.avoid ?? []
+  const network = new StreetNetwork(lines, from, join, avoid)
   network.bridgeGaps(options.gapMetres ?? 80, options.gapCost ?? 4)
   const start = network.attach(from, attachMetres)
   const goal = network.attach(to, attachMetres)
   if (start === null || goal === null) return { reason: 'off-street' }
 
-  const blocked = blockedEdges(network, options.avoid ?? [], join, start, goal)
+  // Where each point joined the streets: the other end of its one link.
+  const joinedAt = (n: number) => {
+    const edge = network.edges[network.nodes[n]!.edges[0]!]!
+    return edge.a === n ? edge.b : edge.a
+  }
+  const startStreet = joinedAt(start)
+  const goalStreet = joinedAt(goal)
+  const retraceEnd = options.retraceEnd ?? 0
+  const retraceStart = options.retraceStart ?? 0
+  const segments = avoid.length - 1
+  const blocked = blockedEdges(
+    network,
+    avoid,
+    join,
+    new Set([start, goal, startStreet, goalStreet]),
+    (k) => k >= segments - retraceEnd || k < retraceStart,
+  )
   const chord = Math.max(distance(from, to), 1)
   const g = network.nodes[goal]!
   const s0 = network.nodes[start]!
@@ -447,13 +544,16 @@ export function streetPath(
   nodes.reverse()
   const points = nodes.map((n) => network.nodes[n]!.p)
   if (pathLength(points) > chord * maxDetour) return { reason: 'detour' }
-  // The clicks are the endpoints; drop the street points that coincide with
-  // them (a click on a street attaches at its own position) and repeats.
+  // The points move onto the streets where they joined them; the path runs
+  // between those, without repeats.
+  const fromStreet = network.nodes[startStreet]!.p
+  const toStreet = network.nodes[goalStreet]!.p
   const same = (a: Position, b: Position) => distance(a, b) < 0.01
   const path: Position[] = []
   for (const p of points.slice(1, -1)) {
-    if (same(p, from) || same(p, to) || (path.length > 0 && same(p, path[path.length - 1]!))) continue
+    if (same(p, fromStreet) || same(p, toStreet) || (path.length > 0 && same(p, path[path.length - 1]!)))
+      continue
     path.push(p)
   }
-  return { path }
+  return { path, from: fromStreet, to: toStreet }
 }
