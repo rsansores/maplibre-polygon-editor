@@ -1,0 +1,108 @@
+{
+  "name": "maplibre-polygon-editor",
+  "version": "0.0.0",
+  "description": "Precise, topology-aware polygon editor for MapLibre GL, with a Vue 3 component. Shared borders stay shared; snapping helps but is never required.",
+  "type": "module",
+  "license": "MIT OR Apache-2.0",
+  "homepage": "https://rsansores.github.io/maplibre-polygon-editor/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rsansores/maplibre-polygon-editor.git"
+  },
+  "bugs": {
+    "url": "https://github.com/rsansores/maplibre-polygon-editor/issues"
+  },
+  "keywords": [
+    "maplibre",
+    "polygon",
+    "editor",
+    "geojson",
+    "topology",
+    "snapping",
+    "territory",
+    "vue"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "packageManager": "pnpm@11.5.0",
+  "sideEffects": [
+    "**/*.css"
+  ],
+  "files": [
+    "dist",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+    "CHANGELOG.md"
+  ],
+  "module": "./dist/polygon-editor.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/polygon-editor.js"
+    },
+    "./core": {
+      "types": "./dist/core/index.d.ts",
+      "import": "./dist/core.js"
+    },
+    "./styles.css": "./dist/polygon-editor.css",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "dev": "vite --host --port 5198",
+    "build": "vite build && vue-tsc -p tsconfig.build.json",
+    "build:demo": "BUILD_DEMO=1 vite build",
+    "preview:demo": "BUILD_DEMO=1 vite preview --port 5296 --strictPort",
+    "prepack": "pnpm run build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "playwright test",
+    "type-check": "vue-tsc --noEmit",
+    "lint": "eslint --max-warnings 0 \"src/**/*.{ts,vue}\" \"demo/**/*.{ts,vue}\" \"tests/**/*.ts\"",
+    "format": "prettier --write \"src/**/*.{ts,vue,css}\" \"demo/**/*.{ts,vue}\" \"tests/**/*.ts\" \"docs/**/*.md\" \"*.{json,js,ts,md}\"",
+    "format:check": "prettier --check \"src/**/*.{ts,vue,css}\" \"demo/**/*.{ts,vue}\" \"tests/**/*.ts\" \"docs/**/*.md\" \"*.{json,js,ts,md}\"",
+    "knip": "knip"
+  },
+  "dependencies": {
+    "polyclip-ts": "^0.16.8"
+  },
+  "peerDependencies": {
+    "maplibre-gl": "^5.0.0 || ^6.0.0",
+    "vue": "^3.4.0"
+  },
+  "peerDependenciesMeta": {
+    "vue": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.63.0",
+    "@protomaps/basemaps": "^5.7.2",
+    "@types/geojson": "^7946.0.16",
+    "@types/node": "^26.6.4",
+    "@vitejs/plugin-vue": "^6.0.9",
+    "@vitest/coverage-v8": "^5.0.3",
+    "eslint": "^10.12.0",
+    "eslint-plugin-vue": "^10.11.1",
+    "globals": "^17.13.0",
+    "happy-dom": "^20.14.5",
+    "knip": "^6.40.0",
+    "maplibre-gl": "^6.13.0",
+    "pmtiles": "^4.5.0",
+    "prettier": "^3.9.9",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.71.1",
+    "vite": "^8.3.3",
+    "vitest": "^5.0.3",
+    "vue": "^3.5.43",
+    "vue-eslint-parser": "^10.4.1",
+    "vue-i18n": "^11.4.13",
+    "vue-tsc": "^3.3.12"
+  },
+  "engines": {
+    "node": ">=20.19"
+  }
+}

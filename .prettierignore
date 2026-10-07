@@ -1,0 +1,9 @@
+# Build output, generated and binary data — never format.
+dist
+dist-demo
+coverage
+test-results
+playwright-report
+demo/public
+node_modules
+pnpm-lock.yaml

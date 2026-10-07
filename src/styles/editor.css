@@ -1,0 +1,535 @@
+/*
+ * Theme contract.
+ *
+ * The editor never hard-codes colours. Every internal `--pe-*` variable
+ * resolves to a host design token (the shadcn-style names many apps already
+ * define) and falls back to a neutral default when those tokens are absent:
+ *   - embedded in a themed host -> inherits --color-primary etc. -> looks native;
+ *   - standalone                -> uses the fallbacks below      -> looks fine.
+ *
+ * `.pe-part` marks each connected part. A host that builds its own layout may
+ * place a part outside any `.pe-root` (a drawer, a sheet), so a part carries
+ * the tokens itself.
+ *
+ * The map colours (`--pe-area-*`, `--pe-map-*`) are read once by the map
+ * binding and handed to MapLibre; call `binding.refreshTheme()` after a theme
+ * switch.
+ */
+.pe-root,
+.pe-part {
+  --pe-bg: var(--color-background, #ffffff);
+  --pe-fg: var(--color-foreground, #0b1220);
+  --pe-card: var(--color-card, #ffffff);
+  --pe-primary: var(--color-primary, #4f46e5);
+  --pe-primary-fg: var(--color-primary-foreground, #ffffff);
+  --pe-muted: var(--color-muted, #f1f5f9);
+  --pe-muted-fg: var(--color-muted-foreground, #64748b);
+  --pe-accent: var(--color-accent, #eef2ff);
+  --pe-accent-fg: var(--color-accent-foreground, var(--pe-fg));
+  --pe-border: var(--color-border, #e2e8f0);
+  --pe-input: var(--color-input, #cbd5e1);
+  --pe-ring: var(--color-ring, var(--pe-primary));
+  --pe-danger: var(--color-destructive, #dc2626);
+  --pe-warning: var(--color-warning, #b45309);
+  --pe-radius: var(--radius, 0.5rem);
+
+  --pe-area-1: var(--color-chart-1, #2563eb);
+  --pe-area-2: var(--color-chart-2, #16a34a);
+  --pe-area-3: var(--color-chart-3, #d97706);
+  --pe-area-4: var(--color-chart-4, #9333ea);
+  --pe-area-5: var(--color-chart-5, #dc2626);
+  --pe-area-6: var(--color-chart-6, #0891b2);
+  --pe-area-7: var(--color-chart-7, #db2777);
+  --pe-area-8: var(--color-chart-8, #65a30d);
+  --pe-map-primary: var(--pe-primary);
+  --pe-map-vertex: var(--pe-card);
+  --pe-map-draft: var(--color-info, #0284c7);
+  --pe-map-cut: var(--color-warning, #ea580c);
+  --pe-map-snap-area: var(--pe-primary);
+  --pe-map-snap-street: #0d9488;
+  --pe-map-locked: var(--pe-muted-fg);
+  --pe-map-pin: var(--pe-danger);
+
+  font-family:
+    var(--font-sans, ui-sans-serif),
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    sans-serif;
+  font-size: 0.875rem;
+  line-height: 1.4;
+  color: var(--pe-fg);
+  box-sizing: border-box;
+}
+.pe-root *,
+.pe-root *::before,
+.pe-root *::after,
+.pe-part *,
+.pe-part *::before,
+.pe-part *::after {
+  box-sizing: border-box;
+}
+
+/* ── Default layout ─────────────────────────────────────────────────────── */
+
+.pe-root {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 20rem;
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas:
+    'toolbar toolbar'
+    'map side';
+  height: 100%;
+  min-height: 24rem;
+  background: var(--pe-bg);
+  border: 1px solid var(--pe-border);
+  border-radius: var(--pe-radius);
+  overflow: hidden;
+}
+.pe-root > .pe-toolbar {
+  grid-area: toolbar;
+  border-bottom: 1px solid var(--pe-border);
+}
+.pe-root > .pe-map {
+  grid-area: map;
+}
+.pe-root > .pe-side {
+  grid-area: side;
+  border-left: 1px solid var(--pe-border);
+}
+/* Narrow containers (the editor measures itself, not the window). */
+.pe-root.pe-narrow {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(16rem, 3fr) minmax(0, 2fr);
+  grid-template-areas: 'toolbar' 'map' 'side';
+}
+.pe-root.pe-narrow > .pe-side {
+  border-left: 0;
+  border-top: 1px solid var(--pe-border);
+}
+
+.pe-side {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--pe-card);
+}
+.pe-side > .pe-search {
+  padding: 0.75rem;
+  border-bottom: 1px solid var(--pe-border);
+}
+.pe-side > .pe-list {
+  flex: 1 1 40%;
+  min-height: 6rem;
+  overflow: auto;
+}
+.pe-side > .pe-inspector {
+  flex: 0 1 auto;
+  max-height: 60%;
+  overflow: auto;
+  border-top: 1px solid var(--pe-border);
+}
+
+/* ── Buttons ────────────────────────────────────────────────────────────── */
+
+.pe-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  height: 2rem;
+  padding: 0 0.625rem;
+  border: 1px solid transparent;
+  border-radius: calc(var(--pe-radius) - 2px);
+  background: transparent;
+  color: var(--pe-fg);
+  font: inherit;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color 120ms,
+    color 120ms,
+    border-color 120ms;
+}
+.pe-btn:hover:not(:disabled) {
+  background: var(--pe-muted);
+}
+.pe-btn:focus-visible,
+.pe-input:focus-visible,
+.pe-list-item:focus-visible {
+  outline: 2px solid var(--pe-ring);
+  outline-offset: 1px;
+}
+.pe-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.pe-btn[aria-pressed='true'] {
+  background: var(--pe-accent);
+  color: var(--pe-accent-fg);
+  border-color: color-mix(in srgb, var(--pe-primary) 35%, transparent);
+}
+.pe-btn--primary {
+  background: var(--pe-primary);
+  color: var(--pe-primary-fg);
+}
+.pe-btn--primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--pe-primary) 88%, black);
+}
+.pe-btn--outline {
+  border-color: var(--pe-input);
+}
+.pe-btn--danger {
+  color: var(--pe-danger);
+}
+.pe-btn--danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--pe-danger) 10%, transparent);
+}
+.pe-btn--icon {
+  width: 2rem;
+  padding: 0;
+}
+.pe-btn--block {
+  width: 100%;
+}
+.pe-icon {
+  width: 1rem;
+  height: 1rem;
+  flex: none;
+}
+
+/* ── Toolbar ────────────────────────────────────────────────────────────── */
+
+.pe-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.5rem;
+  background: var(--pe-card);
+}
+.pe-toolbar__group {
+  display: flex;
+  align-items: center;
+  gap: 0.125rem;
+}
+.pe-toolbar__sep {
+  width: 1px;
+  height: 1.25rem;
+  margin: 0 0.25rem;
+  background: var(--pe-border);
+}
+.pe-toolbar__spacer {
+  flex: 1;
+}
+.pe-segmented {
+  display: inline-flex;
+  padding: 0.125rem;
+  gap: 0.125rem;
+  border-radius: var(--pe-radius);
+  background: var(--pe-muted);
+}
+.pe-segmented .pe-btn {
+  height: 1.75rem;
+}
+.pe-segmented .pe-btn[aria-pressed='true'] {
+  background: var(--pe-card);
+  color: var(--pe-fg);
+  border-color: transparent;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.08);
+}
+
+/* ── Map and overlays ───────────────────────────────────────────────────── */
+
+.pe-map {
+  position: relative;
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+}
+/* MapLibre's stylesheet makes its container `position: relative`, so the
+   canvas fills the part through flex rather than absolute positioning. */
+.pe-map__canvas {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+.pe-overlays {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+.pe-chip {
+  position: absolute;
+  left: 50%;
+  top: 0.75rem;
+  transform: translateX(-50%);
+  max-width: calc(100% - 1.5rem);
+  padding: 0.375rem 0.75rem;
+  border: 1px solid var(--pe-border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--pe-card) 92%, transparent);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.08);
+  color: var(--pe-muted-fg);
+  font-size: 0.75rem;
+  text-align: center;
+}
+.pe-hud {
+  position: absolute;
+  left: 0.75rem;
+  bottom: 2rem;
+  display: flex;
+  gap: 0.75rem;
+  padding: 0.375rem 0.625rem;
+  border: 1px solid var(--pe-border);
+  border-radius: calc(var(--pe-radius) - 2px);
+  background: color-mix(in srgb, var(--pe-card) 92%, transparent);
+  backdrop-filter: blur(6px);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+.pe-hud__label {
+  color: var(--pe-muted-fg);
+}
+.pe-toast {
+  position: absolute;
+  left: 50%;
+  top: 3.25rem;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  width: max-content;
+  max-width: min(30rem, calc(100% - 1.5rem));
+  padding: 0.5rem 0.5rem 0.5rem 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--pe-warning) 40%, var(--pe-border));
+  border-radius: calc(var(--pe-radius) - 2px);
+  background: var(--pe-card);
+  box-shadow: 0 4px 12px rgb(0 0 0 / 0.12);
+  pointer-events: auto;
+  font-size: 0.8125rem;
+}
+.pe-toast .pe-icon {
+  margin-top: 0.125rem;
+  color: var(--pe-warning);
+}
+
+/* ── Panels ─────────────────────────────────────────────────────────────── */
+
+.pe-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.75rem 0.75rem 0.375rem;
+  color: var(--pe-muted-fg);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.pe-count {
+  padding: 0 0.375rem;
+  border-radius: 999px;
+  background: var(--pe-muted);
+  color: var(--pe-muted-fg);
+  font-weight: 500;
+}
+.pe-list__items {
+  list-style: none;
+  margin: 0;
+  padding: 0 0.375rem 0.5rem;
+}
+.pe-list-item {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  width: 100%;
+  padding: 0.5rem;
+  border: 0;
+  border-radius: calc(var(--pe-radius) - 2px);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.pe-list-item:hover {
+  background: var(--pe-muted);
+}
+.pe-list-item[aria-current='true'] {
+  background: var(--pe-accent);
+}
+.pe-list-item__text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+.pe-list-item__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.pe-list-item__meta {
+  color: var(--pe-muted-fg);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+.pe-swatch {
+  width: 0.75rem;
+  height: 0.75rem;
+  flex: none;
+  border-radius: 3px;
+}
+.pe-empty {
+  padding: 1.5rem 1rem;
+  color: var(--pe-muted-fg);
+  text-align: center;
+}
+.pe-empty__title {
+  margin: 0 0 0.25rem;
+  color: var(--pe-fg);
+  font-weight: 500;
+}
+.pe-empty p {
+  margin: 0;
+  font-size: 0.8125rem;
+}
+
+.pe-inspector__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0 0.75rem 0.75rem;
+}
+.pe-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+  margin: 0;
+}
+.pe-metrics div {
+  padding: 0.5rem;
+  border-radius: calc(var(--pe-radius) - 2px);
+  background: var(--pe-muted);
+}
+.pe-metrics dt {
+  color: var(--pe-muted-fg);
+  font-size: 0.6875rem;
+}
+.pe-metrics dd {
+  margin: 0;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.pe-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.pe-field__label {
+  color: var(--pe-muted-fg);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+.pe-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-end;
+}
+.pe-row > * {
+  flex: 1;
+  min-width: 0;
+}
+.pe-row > .pe-btn {
+  flex: none;
+}
+.pe-fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.pe-input,
+.pe-select {
+  width: 100%;
+  height: 2rem;
+  padding: 0 0.625rem;
+  border: 1px solid var(--pe-input);
+  border-radius: calc(var(--pe-radius) - 2px);
+  background: var(--pe-bg);
+  color: var(--pe-fg);
+  font: inherit;
+}
+.pe-input--mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8125rem;
+}
+.pe-note {
+  margin: 0;
+  color: var(--pe-muted-fg);
+  font-size: 0.75rem;
+}
+.pe-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+}
+
+/* ── Search ─────────────────────────────────────────────────────────────── */
+
+.pe-search {
+  position: relative;
+}
+.pe-search__box {
+  position: relative;
+}
+.pe-search__box .pe-icon {
+  position: absolute;
+  left: 0.625rem;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--pe-muted-fg);
+}
+.pe-search__box .pe-input {
+  padding-left: 2rem;
+}
+.pe-results {
+  list-style: none;
+  margin: 0.375rem 0 0;
+  padding: 0.25rem;
+  border: 1px solid var(--pe-border);
+  border-radius: calc(var(--pe-radius) - 2px);
+  background: var(--pe-card);
+}
+.pe-result {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+.pe-result .pe-list-item {
+  flex: 1;
+  padding: 0.375rem 0.5rem;
+  font-size: 0.8125rem;
+}
+.pe-search__status {
+  margin: 0.375rem 0 0;
+  color: var(--pe-muted-fg);
+  font-size: 0.75rem;
+}
+
+.pe-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.pe-fieldset > legend {
+  padding: 0;
+}

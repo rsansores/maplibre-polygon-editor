@@ -1,0 +1,746 @@
+import { subtract, unite } from './clip'
+import { dedupeRing, polygonArea, roundPosition, samePosition } from './geo'
+import { History } from './history'
+import { splitPolygon } from './split'
+import type { SnapResult } from './snap'
+import { insertVertex, locateOnRing, moveVertex, nodeAreas, removeVertex, vertexAt } from './topology'
+import { routeBetween, traceBetween, type Router } from './trace'
+import type { Area, EdgeRef, Issue, Position, Ring, VertexRef } from './types'
+import { findOverlap, polygonIssues } from './validate'
+
+/**
+ * The editor, without a map and without a UI framework.
+ *
+ * It owns the areas, the mode, the selection and the draft, and turns user
+ * intentions ("add a point here", "move this vertex there") into new states.
+ * A map binding feeds it positions; a UI renders what it emits. Because it
+ * never touches the DOM it is tested on its own, and a host can drive it from
+ * anything — a test, a form with coordinate inputs, a script.
+ *
+ * Nothing the user did is ever lost silently: an edit that would break a
+ * rule is refused with an `issue` event, and a draft that cannot be finished
+ * stays on screen to be fixed.
+ */
+
+export type Mode = 'select' | 'draw' | 'cut'
+
+/**
+ * What happens when a newly drawn area covers part of an existing one:
+ *
+ * - `clip` (default): the new area is trimmed to the free ground, and its
+ *   border becomes the neighbour's border, vertex for vertex.
+ * - `forbid`: the drawing is refused.
+ * - `allow`: overlaps are kept. Edits never check for them.
+ */
+export type OverlapPolicy = 'clip' | 'forbid' | 'allow'
+
+export interface EditorOptions {
+  /**
+   * Decimal places every coordinate is rounded to. 8 places is about 1.1 mm;
+   * GeoJSON consumers rarely need more and the rounding is what lets two
+   * areas hold *the same* vertex.
+   */
+  decimals?: number
+  overlap?: OverlapPolicy
+  /** Overlap smaller than this many square metres is numerical noise, not an overlap. */
+  overlapToleranceM2?: number
+  /** Optional street router for "follow roads". */
+  router?: Router | null
+  /** A routed segment longer than this multiple of the straight distance falls back to straight. */
+  maxDetour?: number
+  /** New area ids. Defaults to `crypto.randomUUID()`. */
+  createId?: () => string
+  /** Properties for a new area; `index` is 1-based over the areas that exist. */
+  createProperties?: (index: number) => Record<string, unknown>
+  readonly?: boolean
+}
+
+/** One click of the draft, with the vertices tracing or routing put before it. */
+export interface DraftPoint {
+  position: Position
+  snap: SnapResult
+  via: Position[]
+}
+
+export interface EditorState {
+  areas: Area[]
+  mode: Mode
+  selectedId: string | null
+  selectedVertex: VertexRef | null
+  draft: DraftPoint[]
+  /** A routed segment is being fetched. */
+  pending: boolean
+  snapping: boolean
+  tracing: boolean
+  followRoads: boolean
+  canUndo: boolean
+  canRedo: boolean
+  readonly: boolean
+}
+
+export interface EditorEvents {
+  /** The areas changed by an edit (not by `setAreas`). Persist this. */
+  change: (areas: Area[]) => void
+  /** Anything changed: areas, mode, selection, draft, toggles. Render this. */
+  state: (state: EditorState) => void
+  /** An edit was refused or adjusted. */
+  issue: (issue: Issue) => void
+}
+
+type Listener<K extends keyof EditorEvents> = EditorEvents[K]
+
+const defaultId = () =>
+  typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : `area-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+
+export class PolygonEditorCore {
+  private areas: Area[] = []
+  private mode: Mode = 'select'
+  private selectedId: string | null = null
+  private selectedVertex: VertexRef | null = null
+  private draft: DraftPoint[] = []
+  private pending = false
+  private draftToken = 0
+  private snapping = true
+  private tracing = true
+  private followRoads = false
+  private readonly history = new History<Area[]>()
+  private gesture: {
+    before: Area[]
+    vertex: VertexRef
+    at: Position
+    /** Set when the corner or border is shared with a locked area: the drag moves nothing. */
+    pinnedBy?: string
+    warned?: boolean
+  } | null = null
+  private readonly listeners: { [K in keyof EditorEvents]: Set<Listener<K>> } = {
+    change: new Set(),
+    state: new Set(),
+    issue: new Set(),
+  }
+
+  readonly decimals: number
+  /** Two coordinates closer than this are the same vertex. */
+  readonly epsilon: number
+  /** A vertex closer than this to an edge lies on it (covers rounding). */
+  readonly edgeEpsilon: number
+  private options: Required<Omit<EditorOptions, 'decimals'>>
+
+  constructor(options: EditorOptions = {}) {
+    this.decimals = options.decimals ?? 8
+    this.epsilon = 0.5 * 10 ** -this.decimals
+    this.edgeEpsilon = 10 ** -this.decimals
+    this.options = {
+      overlap: options.overlap ?? 'clip',
+      overlapToleranceM2: options.overlapToleranceM2 ?? 0.01,
+      router: options.router ?? null,
+      maxDetour: options.maxDetour ?? 3,
+      createId: options.createId ?? defaultId,
+      createProperties: options.createProperties ?? (() => ({})),
+      readonly: options.readonly ?? false,
+    }
+  }
+
+  // ── Events ──────────────────────────────────────────────────────────────
+
+  on<K extends keyof EditorEvents>(event: K, listener: EditorEvents[K]): () => void {
+    this.listeners[event].add(listener)
+    return () => this.listeners[event].delete(listener)
+  }
+
+  private emit<K extends keyof EditorEvents>(event: K, ...args: Parameters<EditorEvents[K]>): void {
+    for (const listener of this.listeners[event])
+      (listener as (...a: Parameters<EditorEvents[K]>) => void)(...args)
+  }
+
+  private notify(): void {
+    this.emit('state', this.getState())
+  }
+
+  private refuse(issue: Issue): false {
+    this.emit('issue', issue)
+    return false
+  }
+
+  // ── Reading ─────────────────────────────────────────────────────────────
+
+  getState(): EditorState {
+    return {
+      areas: this.areas,
+      mode: this.mode,
+      selectedId: this.selectedId,
+      selectedVertex: this.selectedVertex,
+      draft: this.draft,
+      pending: this.pending,
+      snapping: this.snapping,
+      tracing: this.tracing,
+      followRoads: this.followRoads,
+      canUndo: this.history.canUndo,
+      canRedo: this.history.canRedo,
+      readonly: this.options.readonly,
+    }
+  }
+
+  getArea(id: string): Area | undefined {
+    return this.areas.find((a) => a.id === id)
+  }
+
+  /** The draft as one path: every click with its traced or routed vertices. */
+  draftPath(): Position[] {
+    return this.draft.flatMap((p) => [...p.via, p.position])
+  }
+
+  get hasRouter(): boolean {
+    return this.options.router !== null
+  }
+
+  // ── Configuration ───────────────────────────────────────────────────────
+
+  /** Replace the areas from outside (e.g. the host loaded them). Not an edit: no `change`, no history entry. */
+  setAreas(areas: Area[], options: { resetHistory?: boolean } = {}): void {
+    if (areas === this.areas) return
+    this.areas = areas
+    if (options.resetHistory) this.history.clear()
+    if (this.selectedId && !this.getArea(this.selectedId)) this.selectedId = null
+    if (this.selectedVertex && !vertexAt(this.areas, this.selectedVertex)) this.selectedVertex = null
+    this.notify()
+  }
+
+  setReadonly(readonly: boolean): void {
+    this.options.readonly = readonly
+    if (readonly) {
+      this.mode = 'select'
+      this.draft = []
+      this.selectedVertex = null
+    }
+    this.notify()
+  }
+
+  setRouter(router: Router | null): void {
+    this.options.router = router
+    if (!router) this.followRoads = false
+    this.notify()
+  }
+
+  setOverlapPolicy(policy: OverlapPolicy): void {
+    this.options.overlap = policy
+  }
+
+  setSnapping(on: boolean): void {
+    this.snapping = on
+    this.notify()
+  }
+
+  setTracing(on: boolean): void {
+    this.tracing = on
+    this.notify()
+  }
+
+  setFollowRoads(on: boolean): void {
+    this.followRoads = on && this.hasRouter
+    this.notify()
+  }
+
+  setMode(mode: Mode): void {
+    if (this.options.readonly && mode !== 'select') return
+    this.mode = mode
+    this.cancelDraft()
+    if (mode !== 'select') this.selectedVertex = null
+    this.notify()
+  }
+
+  // ── Selection ───────────────────────────────────────────────────────────
+
+  select(id: string | null): void {
+    this.selectedId = id && this.getArea(id) ? id : null
+    this.selectedVertex = null
+    this.notify()
+  }
+
+  selectVertex(ref: VertexRef | null): void {
+    if (ref && !vertexAt(this.areas, ref)) return
+    this.selectedVertex = ref
+    if (ref) this.selectedId = ref.areaId
+    this.notify()
+  }
+
+  // ── Drafting (draw and cut) ─────────────────────────────────────────────
+
+  private round(p: Position): Position {
+    return roundPosition(p, this.decimals)
+  }
+
+  /**
+   * Add a click to the draft. `snap` is where the click landed after
+   * snapping (kind `none` for a free click). Clicking the draft's first
+   * vertex again closes and finishes a drawn area.
+   */
+  async addPoint(snap: SnapResult): Promise<void> {
+    if (this.options.readonly || this.mode === 'select' || this.pending) return
+    const position = this.round(snap.position)
+    const first = this.draft[0]
+    const last = this.draft[this.draft.length - 1]
+    if (last && samePosition(last.position, position, this.epsilon)) return
+
+    if (
+      this.mode === 'draw' &&
+      first &&
+      this.draft.length >= 3 &&
+      samePosition(first.position, position, this.epsilon)
+    ) {
+      this.finish()
+      return
+    }
+
+    let via: Position[] = []
+    if (last) {
+      const traced = this.tracing
+        ? traceBetween(last.snap, { ...snap, position }, this.areas, this.edgeEpsilon, {
+            areas: this.mode === 'draw',
+            lines: true,
+          })
+        : null
+      if (traced) {
+        via = traced.map((p) => this.round(p))
+      } else if (this.followRoads && this.options.router && isLineSnap(last.snap) && isLineSnap(snap)) {
+        const token = ++this.draftToken
+        this.pending = true
+        this.notify()
+        const routed = await routeBetween(
+          this.options.router,
+          last.position,
+          position,
+          this.options.maxDetour,
+        )
+        this.pending = false
+        // The user cancelled or switched mode while the route was in flight.
+        if (token !== this.draftToken) {
+          this.notify()
+          return
+        }
+        if (routed) via = routed.map((p) => this.round(p))
+        else this.emit('issue', { code: 'route-fallback' })
+      }
+    }
+
+    this.draft = [...this.draft, { position, snap: { ...snap, position }, via }]
+    this.notify()
+  }
+
+  /** Undo the last click of the draft (with whatever it traced). */
+  removeLastPoint(): void {
+    if (this.draft.length === 0) return
+    this.draft = this.draft.slice(0, -1)
+    this.notify()
+  }
+
+  cancelDraft(): void {
+    this.draftToken++
+    this.pending = false
+    if (this.draft.length > 0) {
+      this.draft = []
+      this.notify()
+    }
+  }
+
+  /** Finish the draft: create an area (draw mode) or cut one (cut mode). */
+  finish(): boolean {
+    if (this.options.readonly || this.pending) return false
+    const ok = this.mode === 'draw' ? this.finishArea() : this.mode === 'cut' ? this.finishCut() : false
+    if (ok) {
+      this.draft = []
+      this.notify()
+    }
+    return ok
+  }
+
+  private finishArea(): boolean {
+    const ring = dedupeRing(
+      this.draftPath().map((p) => this.round(p)),
+      this.epsilon,
+    )
+    const problems = polygonIssues([ring], this.epsilon)
+    if (problems.length > 0) return this.refuse({ code: problems[0]! })
+
+    let rings: Ring[] = [ring]
+    const others = this.areas
+    const policy = this.options.overlap
+    if (policy !== 'allow') {
+      const overlapped = findOverlap(rings, others, this.epsilon, this.options.overlapToleranceM2)
+      if (overlapped && policy === 'forbid') return this.refuse({ code: 'overlap', otherId: overlapped.id })
+      if (overlapped) {
+        const pieces = subtract(
+          rings,
+          others.map((a) => a.rings),
+          this.epsilon,
+        )
+          .map((polygon) =>
+            polygon.map((r) =>
+              dedupeRing(
+                r.map((p) => this.round(p)),
+                this.epsilon,
+              ),
+            ),
+          )
+          .filter(
+            (polygon) => polygon[0]!.length >= 3 && polygonArea(polygon) > this.options.overlapToleranceM2,
+          )
+        if (pieces.length === 0) return this.refuse({ code: 'clipped-away' })
+        pieces.sort((a, b) => polygonArea(b) - polygonArea(a))
+        rings = pieces[0]!
+        const valid = polygonIssues(rings, this.epsilon)
+        if (valid.length > 0) return this.refuse({ code: valid[0]! })
+        this.emit('issue', { code: pieces.length > 1 ? 'clipped-split' : 'clipped', count: pieces.length })
+      }
+    }
+
+    const area: Area = {
+      id: this.options.createId(),
+      rings,
+      properties: this.options.createProperties(this.areas.length + 1),
+    }
+    const next = nodeAreas([...this.areas, area], [area.id], this.edgeEpsilon)
+    this.commit(next)
+    this.selectedId = area.id
+    this.selectedVertex = null
+    return true
+  }
+
+  private finishCut(): boolean {
+    const line = this.draftPath()
+    if (line.length < 2) return this.refuse({ code: 'cut-missed' })
+    const candidates = [
+      ...this.areas.filter((a) => a.id === this.selectedId),
+      ...this.areas.filter((a) => a.id !== this.selectedId),
+    ].filter((a) => !a.locked)
+
+    let lastIssue: Issue = { code: 'cut-missed' }
+    for (const area of candidates) {
+      const result = splitPolygon(area.rings, line, this.decimals, this.epsilon)
+      if ('issue' in result) {
+        if (result.issue !== 'cut-missed') lastIssue = { code: result.issue, areaId: area.id }
+        continue
+      }
+      const [a, b] = result.pieces
+      for (const piece of [a, b]) {
+        const problems = polygonIssues(piece, this.epsilon)
+        if (problems.length > 0) return this.refuse({ code: problems[0]!, areaId: area.id })
+      }
+      const [keep, give] = polygonArea(a) >= polygonArea(b) ? [a, b] : [b, a]
+      const created: Area = {
+        id: this.options.createId(),
+        rings: give,
+        properties: this.options.createProperties(this.areas.length + 1),
+      }
+      const next = this.areas.flatMap((x) => (x.id === area.id ? [{ ...x, rings: keep }, created] : [x]))
+      this.commit(nodeAreas(next, [area.id, created.id], this.edgeEpsilon))
+      this.selectedId = area.id
+      this.selectedVertex = null
+      return true
+    }
+    return this.refuse(lastIssue)
+  }
+
+  // ── Vertex gestures ─────────────────────────────────────────────────────
+
+  private editable(areaId: string): boolean {
+    if (this.options.readonly) return false
+    const area = this.getArea(areaId)
+    if (!area) return false
+    if (area.locked) return this.refuse({ code: 'locked', areaId })
+    return true
+  }
+
+  /**
+   * The locked area holding a vertex at `position`, if any. A corner shared
+   * with a locked area is pinned: moving it would tear the shared border,
+   * since the locked side cannot follow.
+   */
+  private lockedAt(position: Position): Area | undefined {
+    return this.areas.find(
+      (a) => a.locked && a.rings.some((r) => r.some((p) => samePosition(p, position, this.epsilon))),
+    )
+  }
+
+  /** The locked area that shares the edge `edge` (both ends and the middle on its border), if any. */
+  private lockedAlong(edge: EdgeRef): Area | undefined {
+    const ring = this.getArea(edge.areaId)?.rings[edge.ring]
+    if (!ring) return undefined
+    const a = ring[edge.index]!
+    const b = ring[(edge.index + 1) % ring.length]!
+    const middle: Position = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]
+    return this.areas.find(
+      (x) =>
+        x.locked &&
+        x.rings.some(
+          (r) =>
+            locateOnRing(r, a, this.edgeEpsilon) &&
+            locateOnRing(r, b, this.edgeEpsilon) &&
+            locateOnRing(r, middle, this.edgeEpsilon),
+        ),
+    )
+  }
+
+  /** Start dragging a vertex. Moves are previews until `endDrag`. */
+  beginDrag(ref: VertexRef): boolean {
+    const at = vertexAt(this.areas, ref)
+    if (!at || !this.editable(ref.areaId)) return false
+    this.gesture = { before: this.areas, vertex: ref, at, pinnedBy: this.lockedAt(at)?.id }
+    this.selectedId = ref.areaId
+    this.selectedVertex = ref
+    this.notify()
+    return true
+  }
+
+  /**
+   * Insert a vertex on an edge and start dragging it (a midpoint handle).
+   * Returns whether a gesture started; a border shared with a locked area
+   * starts one that moves nothing and says why.
+   */
+  beginInsert(edge: EdgeRef, position: Position): boolean {
+    if (!this.editable(edge.areaId)) return false
+    const before = this.areas
+    const at = this.round(position)
+    const pinnedBy = this.lockedAlong(edge)?.id
+    if (pinnedBy) {
+      this.gesture = { before, vertex: { ...edge }, at, pinnedBy }
+      return true
+    }
+    const { areas, vertex } = insertVertex(this.areas, edge, at, this.epsilon)
+    this.areas = areas
+    this.gesture = { before, vertex, at }
+    this.selectedId = edge.areaId
+    this.selectedVertex = vertex
+    this.notify()
+    return true
+  }
+
+  dragTo(position: Position): void {
+    if (!this.gesture) return
+    if (this.gesture.pinnedBy) {
+      // Say so once per gesture, not on every pointer move.
+      if (!this.gesture.warned) this.emit('issue', { code: 'pinned', otherId: this.gesture.pinnedBy })
+      this.gesture.warned = true
+      return
+    }
+    const to = this.round(position)
+    this.areas = moveVertex(this.areas, this.gesture.vertex, to, this.epsilon)
+    this.gesture.at = to
+    this.notify()
+  }
+
+  /** Finish a drag: keep it if every touched area is still valid, otherwise put everything back. */
+  endDrag(): boolean {
+    const gesture = this.gesture
+    if (!gesture) return false
+    this.gesture = null
+    const moved = this.areas
+    this.areas = gesture.before
+    if (moved === gesture.before) {
+      this.notify()
+      return false
+    }
+    // Dropped onto a neighbour's edge: make it a vertex of that edge too.
+    return this.tryCommit(nodeAreas(moved, [gesture.vertex.areaId], this.edgeEpsilon))
+  }
+
+  cancelDrag(): void {
+    if (!this.gesture) return
+    this.areas = this.gesture.before
+    this.gesture = null
+    this.notify()
+  }
+
+  /** Put a vertex (and every vertex linked to it) at an exact position, e.g. typed coordinates. */
+  setVertex(ref: VertexRef, position: Position): boolean {
+    const at = vertexAt(this.areas, ref)
+    if (!at || !this.editable(ref.areaId)) return false
+    const lock = this.lockedAt(at)
+    if (lock) return this.refuse({ code: 'pinned', areaId: ref.areaId, otherId: lock.id })
+    if (
+      !Number.isFinite(position[0]) ||
+      !Number.isFinite(position[1]) ||
+      Math.abs(position[1]) > 90 ||
+      Math.abs(position[0]) > 180
+    ) {
+      return this.refuse({ code: 'invalid-coordinates' })
+    }
+    const moved = moveVertex(this.areas, ref, this.round(position), this.epsilon)
+    return this.tryCommit(nodeAreas(moved, [ref.areaId], this.edgeEpsilon))
+  }
+
+  /** Insert a vertex into an edge at an exact position. */
+  insertAt(edge: EdgeRef, position: Position): boolean {
+    if (!this.editable(edge.areaId)) return false
+    const lock = this.lockedAlong(edge)
+    if (lock) return this.refuse({ code: 'pinned', areaId: edge.areaId, otherId: lock.id })
+    const { areas, vertex } = insertVertex(this.areas, edge, this.round(position), this.epsilon)
+    const ok = this.tryCommit(areas)
+    if (ok) this.selectedVertex = vertex
+    return ok
+  }
+
+  deleteVertex(ref: VertexRef): boolean {
+    const at = vertexAt(this.areas, ref)
+    if (!at || !this.editable(ref.areaId)) return false
+    const lock = this.lockedAt(at)
+    if (lock) return this.refuse({ code: 'pinned', areaId: ref.areaId, otherId: lock.id })
+    const ok = this.tryCommit(removeVertex(this.areas, ref, this.epsilon))
+    if (ok) {
+      this.selectedVertex = null
+      this.notify()
+    }
+    return ok
+  }
+
+  // ── Whole areas ─────────────────────────────────────────────────────────
+
+  deleteArea(id: string): boolean {
+    if (!this.editable(id)) return false
+    this.commit(this.areas.filter((a) => a.id !== id))
+    if (this.selectedId === id) {
+      this.selectedId = null
+      this.selectedVertex = null
+    }
+    this.notify()
+    return true
+  }
+
+  /** Merge `otherId` into `id`. They must share a border; `id` keeps its identity and properties. */
+  mergeAreas(id: string, otherId: string): boolean {
+    if (id === otherId || !this.editable(id) || !this.editable(otherId)) return false
+    const a = this.getArea(id)!
+    const b = this.getArea(otherId)!
+    const merged = unite(a.rings, b.rings, this.epsilon)
+    if (merged.length !== 1) return this.refuse({ code: 'not-adjacent', areaId: id, otherId })
+    const rings = merged[0]!.map((r) =>
+      dedupeRing(
+        r.map((p) => this.round(p)),
+        this.epsilon,
+      ),
+    )
+    const next = this.areas.filter((x) => x.id !== otherId).map((x) => (x.id === id ? { ...x, rings } : x))
+    const ok = this.tryCommit(nodeAreas(next, [id], this.edgeEpsilon), [id])
+    if (ok) {
+      this.selectedId = id
+      this.selectedVertex = null
+      this.notify()
+    }
+    return ok
+  }
+
+  /** Shallow-merge `patch` into an area's properties. */
+  updateProperties(id: string, patch: Record<string, unknown>): boolean {
+    if (this.options.readonly) return false
+    const area = this.getArea(id)
+    if (!area) return false
+    this.commit(
+      this.areas.map((a) => (a.id === id ? { ...a, properties: { ...a.properties, ...patch } } : a)),
+    )
+    this.notify()
+    return true
+  }
+
+  /** Add areas (an import). Coordinates are rounded; invalid polygons are skipped and reported. */
+  addAreas(areas: Area[], options: { replace?: boolean } = {}): number {
+    if (this.options.readonly) return 0
+    const taken = new Set(options.replace ? [] : this.areas.map((a) => a.id))
+    const accepted: Area[] = []
+    let skipped = 0
+    for (const area of areas) {
+      const rings = area.rings.map((r) =>
+        dedupeRing(
+          r.map((p) => this.round(p)),
+          this.epsilon,
+        ),
+      )
+      if (polygonIssues(rings, this.epsilon).length > 0) {
+        skipped++
+        continue
+      }
+      const id = taken.has(area.id) ? this.options.createId() : area.id
+      taken.add(id)
+      accepted.push({ ...area, id, rings })
+    }
+    if (skipped > 0) this.emit('issue', { code: 'import-skipped', count: skipped })
+    if (accepted.length === 0) return 0
+    const base = options.replace ? [] : this.areas
+    this.commit(
+      nodeAreas(
+        [...base, ...accepted],
+        accepted.map((a) => a.id),
+        this.edgeEpsilon,
+      ),
+    )
+    this.notify()
+    return accepted.length
+  }
+
+  // ── History ─────────────────────────────────────────────────────────────
+
+  undo(): void {
+    if (this.draft.length > 0) {
+      this.removeLastPoint()
+      return
+    }
+    const previous = this.history.undo(this.areas)
+    if (previous === undefined) return
+    this.areas = previous
+    this.afterHistoryJump()
+  }
+
+  redo(): void {
+    const next = this.history.redo(this.areas)
+    if (next === undefined) return
+    this.areas = next
+    this.afterHistoryJump()
+  }
+
+  private afterHistoryJump(): void {
+    if (this.selectedId && !this.getArea(this.selectedId)) this.selectedId = null
+    if (this.selectedVertex && !vertexAt(this.areas, this.selectedVertex)) this.selectedVertex = null
+    this.emit('change', this.areas)
+    this.notify()
+  }
+
+  // ── Committing ──────────────────────────────────────────────────────────
+
+  private commit(next: Area[]): void {
+    this.history.push(this.areas)
+    this.areas = next
+    this.emit('change', next)
+  }
+
+  /**
+   * Commit `next` if every area that changed is still valid and, unless
+   * overlaps are allowed, overlaps nothing. Otherwise keep the current state
+   * and report why.
+   */
+  private tryCommit(next: Area[], alsoCheck: string[] = []): boolean {
+    const before = new Map(this.areas.map((a) => [a.id, a]))
+    const changed = next.filter((a) => before.get(a.id) !== a || alsoCheck.includes(a.id))
+    for (const area of changed) {
+      const problems = polygonIssues(area.rings, this.epsilon)
+      if (problems.length > 0) {
+        this.notify()
+        return this.refuse({ code: problems[0]!, areaId: area.id })
+      }
+    }
+    if (this.options.overlap !== 'allow') {
+      for (const area of changed) {
+        const others = next.filter((a) => a.id !== area.id)
+        const hit = findOverlap(area.rings, others, this.epsilon, this.options.overlapToleranceM2)
+        if (hit) {
+          this.notify()
+          return this.refuse({ code: 'overlap', areaId: area.id, otherId: hit.id })
+        }
+      }
+    }
+    this.commit(next)
+    this.notify()
+    return true
+  }
+}
+
+const isLineSnap = (s: SnapResult) => s.kind === 'line' || s.kind === 'line-vertex'

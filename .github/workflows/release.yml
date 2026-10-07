@@ -1,0 +1,102 @@
+name: Release
+
+# Manual, click-to-release. Publishes maplibre-polygon-editor to npm using OIDC
+# Trusted Publishing, so no long-lived registry token is ever stored in this
+# repo. The publish job runs in the protected `release` environment and waits
+# for your approval before anything reaches the registry. See RELEASING.md.
+#
+# Third-party actions are pinned to full commit SHAs — a hijacked tag cannot
+# inject code into the publish job. Dependabot proposes updates.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (semver, e.g. 0.1.0)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Dry run: build and pack only. No bump, tag or publish.'
+        type: boolean
+        default: false
+
+# Least privilege by default; each job opts into exactly what it needs.
+permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  # Validate the requested version string before spending CI on a bad input.
+  validate-version:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - name: Validate version is semver
+        run: |
+          printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$' \
+            || { echo "::error::'$VERSION' is not a valid semver version"; exit 1; }
+
+  # The same checks that gate every pull request — a release can never be
+  # less verified than a PR, and there is one list of checks to maintain.
+  verify:
+    needs: validate-version
+    # A reusable-workflow call is capped at the permissions the caller grants;
+    # the top-level `permissions: {}` would otherwise starve its checkout.
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    needs: [validate-version, verify]
+    runs-on: ubuntu-latest
+    # Protected environment: required reviewers make this job wait for approval.
+    environment: release
+    permissions:
+      contents: write # push the version-bump commit and the tag
+      id-token: write # OIDC for npm — no stored secrets
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+      # Node 24 ships npm >= 11.5.1, which Trusted Publishing needs. Do NOT
+      # `npm install -g npm@latest`: upgrading the bundled npm in place has
+      # broken its sigstore dependency and with it `--provenance`.
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          registry-url: 'https://registry.npmjs.org'
+          cache: pnpm
+      - name: npm version (must be >= 11.5.1 for Trusted Publishing)
+        run: npm --version
+
+      # Set the version in the working tree only. It is committed last, after
+      # npm accepted the package, so a failed publish leaves the repo clean and
+      # the run retryable.
+      - name: Set version
+        run: npm version "$VERSION" --no-git-tag-version --allow-same-version
+
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm build
+
+      - name: Publish to npm
+        # --ignore-scripts: dist is already built. A real run attaches
+        # provenance; a dry run only validates the tarball.
+        run: npm publish --access public --ignore-scripts ${{ inputs.dry_run && '--dry-run' || '--provenance' }}
+
+      - name: Commit, tag and push
+        if: ${{ !inputs.dry_run }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "release: v$VERSION"
+          git tag -a "v$VERSION" -m "v$VERSION"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+          git push origin "v$VERSION"

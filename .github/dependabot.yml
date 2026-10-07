@@ -1,0 +1,21 @@
+version: 2
+updates:
+  # Keeps the SHA-pinned GitHub Actions current (security patches) via pull
+  # requests you review. Grouped so related bumps arrive as one.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ['*']
+
+  # The toolchain moves in lockstep (vite/plugin-vue, typescript/vue-tsc), so
+  # group it — one pull request a week to test as a unit.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      npm:
+        patterns: ['*']
