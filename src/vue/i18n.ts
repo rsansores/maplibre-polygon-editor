@@ -9,7 +9,7 @@ import { computed, getCurrentInstance } from 'vue'
 
 export type Locale = 'en' | 'es' | (string & {})
 export type MessageTable = Record<string, string>
-export type Messages = Record<Locale, MessageTable>
+export type Messages = Partial<Record<Locale, MessageTable>>
 
 const en: MessageTable = {
   // Modes and tools
@@ -99,6 +99,7 @@ const en: MessageTable = {
   'issue.cut-crosses-hole': 'The line cannot pass through a hole.',
   'issue.not-adjacent': 'Only areas that share a border can be merged.',
   'issue.locked': 'This area is locked.',
+  'issue.not-allowed': 'You are not allowed to do that here.',
   'issue.pinned': 'This corner or border is shared with a locked area, so it stays where it is.',
   'issue.route-fallback': 'No street path close to that line joins those points; a straight line was used.',
   'issue.import-skipped': '{n} shapes could not be imported (not polygons, or invalid).',
@@ -187,6 +188,7 @@ const es: MessageTable = {
   'issue.cut-crosses-hole': 'La línea no puede pasar por un hueco.',
   'issue.not-adjacent': 'Solo se pueden unir áreas que comparten un borde.',
   'issue.locked': 'Esta área está bloqueada.',
+  'issue.not-allowed': 'No tienes permiso para hacer eso aquí.',
   'issue.pinned': 'Esta esquina o borde se comparte con un área bloqueada, así que no se mueve.',
   'issue.route-fallback': 'Ninguna ruta por calles cercana a esa línea une esos puntos; se usó una recta.',
   'issue.import-skipped': 'No se pudieron importar {n} figuras (no son polígonos o no son válidas).',

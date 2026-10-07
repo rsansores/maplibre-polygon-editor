@@ -66,6 +66,20 @@ export interface EditorOptions {
   /** Properties for a new area; `index` is 1-based over the areas that exist. */
   createProperties?: (index: number) => Record<string, unknown>
   readonly?: boolean
+  /** What the user may do besides reshaping and renaming. Everything, by default. */
+  permissions?: Permissions
+}
+
+/**
+ * Rights a host can withhold without making the editor read-only — for users
+ * who may reshape the areas they have but not add or remove any. An action
+ * withheld is refused with `not-allowed`; the Vue parts do not offer it.
+ */
+export interface Permissions {
+  /** Draw a new area, cut one in two (the cut makes a new area) or import. Default `true`. */
+  create?: boolean
+  /** Whether `area` may be deleted, or merged away — a merge deletes one of the two. Default: every area. */
+  delete?: (area: Area) => boolean
 }
 
 /** One click of the draft, with the vertices tracing or routing put before it. */
@@ -91,6 +105,8 @@ export interface EditorState {
   canUndo: boolean
   canRedo: boolean
   readonly: boolean
+  /** New areas may be drawn, cut or imported; see `Permissions.create`. */
+  canCreate: boolean
 }
 
 export interface EditorEvents {
@@ -103,6 +119,11 @@ export interface EditorEvents {
 }
 
 type Listener<K extends keyof EditorEvents> = EditorEvents[K]
+
+const permissionsWith = (permissions: Permissions = {}): Required<Permissions> => ({
+  create: permissions.create ?? true,
+  delete: permissions.delete ?? (() => true),
+})
 
 const defaultId = () =>
   typeof crypto !== 'undefined' && 'randomUUID' in crypto
@@ -141,7 +162,8 @@ export class PolygonEditorCore {
   readonly epsilon: number
   /** A vertex closer than this to an edge lies on it (covers rounding). */
   readonly edgeEpsilon: number
-  private options: Required<Omit<EditorOptions, 'decimals'>>
+  private options: Required<Omit<EditorOptions, 'decimals' | 'permissions'>>
+  private permissions: Required<Permissions>
 
   constructor(options: EditorOptions = {}) {
     this.decimals = options.decimals ?? 8
@@ -157,6 +179,7 @@ export class PolygonEditorCore {
       createProperties: options.createProperties ?? (() => ({})),
       readonly: options.readonly ?? false,
     }
+    this.permissions = permissionsWith(options.permissions)
   }
 
   // ── Events ──────────────────────────────────────────────────────────────
@@ -197,6 +220,7 @@ export class PolygonEditorCore {
       canUndo: this.history.canUndo,
       canRedo: this.history.canRedo,
       readonly: this.options.readonly,
+      canCreate: this.permissions.create,
     }
   }
 
@@ -234,6 +258,22 @@ export class PolygonEditorCore {
       this.selectedVertex = null
     }
     this.notify()
+  }
+
+  /** Replace the permissions. Losing `create` mid-drawing drops the drawing. */
+  setPermissions(permissions: Permissions): void {
+    this.permissions = permissionsWith(permissions)
+    if (!this.permissions.create && this.mode !== 'select') {
+      this.mode = 'select'
+      this.draft = []
+    }
+    this.notify()
+  }
+
+  /** Whether the area may be deleted or merged away. */
+  canDelete(id: string): boolean {
+    const area = this.getArea(id)
+    return area !== undefined && !area.locked && this.permissions.delete(area)
   }
 
   setRouter(router: Router | null): void {
@@ -274,6 +314,10 @@ export class PolygonEditorCore {
 
   setMode(mode: Mode): void {
     if (this.options.readonly && mode !== 'select') return
+    if (mode !== 'select' && !this.permissions.create) {
+      this.refuse({ code: 'not-allowed' })
+      return
+    }
     this.mode = mode
     this.cancelDraft()
     if (mode !== 'select') this.selectedVertex = null
@@ -604,6 +648,7 @@ export class PolygonEditorCore {
    */
   finish(closingVia?: Position[]): boolean {
     if (this.options.readonly || this.pending) return false
+    if (this.mode !== 'select' && !this.permissions.create) return this.refuse({ code: 'not-allowed' })
     let ok = false
     if (this.mode === 'draw') {
       const first = this.draft[0]
@@ -869,6 +914,7 @@ export class PolygonEditorCore {
 
   deleteArea(id: string): boolean {
     if (!this.editable(id)) return false
+    if (!this.permissions.delete(this.getArea(id)!)) return this.refuse({ code: 'not-allowed', areaId: id })
     this.commit(this.areas.filter((a) => a.id !== id))
     if (this.selectedId === id) {
       this.selectedId = null
@@ -883,6 +929,7 @@ export class PolygonEditorCore {
     if (id === otherId || !this.editable(id) || !this.editable(otherId)) return false
     const a = this.getArea(id)!
     const b = this.getArea(otherId)!
+    if (!this.permissions.delete(b)) return this.refuse({ code: 'not-allowed', areaId: otherId })
     const merged = unite(a.rings, b.rings, this.epsilon)
     if (merged.length !== 1) return this.refuse({ code: 'not-adjacent', areaId: id, otherId })
     const rings = merged[0]!.map((r) =>
@@ -916,6 +963,10 @@ export class PolygonEditorCore {
   /** Add areas (an import). Coordinates are rounded; invalid polygons are skipped and reported. */
   addAreas(areas: Area[], options: { replace?: boolean } = {}): number {
     if (this.options.readonly) return 0
+    if (!this.permissions.create) {
+      this.refuse({ code: 'not-allowed' })
+      return 0
+    }
     const taken = new Set(options.replace ? [] : this.areas.map((a) => a.id))
     const accepted: Area[] = []
     let skipped = 0

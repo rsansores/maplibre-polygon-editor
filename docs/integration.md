@@ -359,6 +359,26 @@ fully editable.
 
 `readonly` turns the whole editor into a viewer: selection, measurements and export still work.
 
+**Permissions.** Between editing everything and editing nothing, a host can withhold the two acts
+that change _which_ areas exist, for users who may reshape the areas they have but not add or
+remove any:
+
+```ts
+usePolygonEditor({
+  modelValue: areas,
+  permissions: () => ({
+    create: user.mayCreate, // draw, cut (a cut makes a new area) and import
+    delete: (area) => area.properties.mine === true, // delete, or merge away
+  }),
+})
+```
+
+Both default to allowed. A withheld act is refused with `not-allowed`, and the parts do not offer
+it: the toolbar drops _Draw_, _Cut_ and _Import_, the inspector drops _Delete_ and lists only the
+neighbours that may be merged away (a merge keeps the selected area and deletes the other). Losing
+`create` in the middle of a drawing drops the drawing. In the core: `permissions` in the options,
+`setPermissions()`, `canDelete(id)`, and `canCreate` in the state.
+
 ## Theming
 
 The stylesheet resolves every colour from the shadcn-style design-token names many apps already
@@ -430,6 +450,7 @@ messages cover all of them.
 | `cut-crosses-hole`    | A cut line passes through a hole.                                              |
 | `not-adjacent`        | A merge between areas that share no border.                                    |
 | `locked`              | An edit on a locked area.                                                      |
+| `not-allowed`         | A draw, cut, import, delete or merge the host's `permissions` withhold.        |
 | `pinned`              | A move, deletion or insertion on a corner or border shared with a locked area. |
 | `route-fallback`      | "Follow roads" found no street path near the line; the segment is straight.    |
 | `import-skipped`      | Shapes in an import that are not valid polygons (`count` says how many).       |

@@ -689,3 +689,46 @@ describe('following streets (no router: the network the map draws)', () => {
     for (const p of ring) expect(isOnGrid(p)).toBe(true)
   })
 })
+
+describe('permissions', () => {
+  const pair = () => [area('a', square(0, 0, 0.01)), area('b', square(0.01, 0, 0.01))]
+
+  it('refuses drawing, cutting and importing without create, and says so', async () => {
+    const { editor, issues, changes } = makeEditor({ permissions: { create: false } })
+    editor.setAreas(pair())
+    editor.setMode('draw')
+    editor.setMode('cut')
+    expect(editor.getState().mode).toBe('select')
+    expect(editor.getState().canCreate).toBe(false)
+    expect(editor.addAreas([area('c', square(1, 1, 0.01))])).toBe(0)
+    expect(issues.map((i) => i.code)).toEqual(['not-allowed', 'not-allowed', 'not-allowed'])
+    expect(changes).toHaveLength(0)
+  })
+
+  it('still lets a corner be moved and an area be renamed without create', () => {
+    const { editor } = makeEditor({ permissions: { create: false } })
+    editor.setAreas(pair())
+    expect(editor.setVertex({ areaId: 'a', ring: 0, index: 0 }, [-0.001, -0.001])).toBe(true)
+    expect(editor.updateProperties('a', { name: 'Norte' })).toBe(true)
+  })
+
+  it('refuses deleting, or merging away, an area the host keeps', () => {
+    const { editor, issues } = makeEditor({ permissions: { delete: (a) => a.id !== 'b' } })
+    editor.setAreas(pair())
+    expect(editor.canDelete('a')).toBe(true)
+    expect(editor.canDelete('b')).toBe(false)
+    expect(editor.deleteArea('b')).toBe(false)
+    expect(editor.mergeAreas('a', 'b')).toBe(false)
+    expect(issues.map((i) => i.code)).toEqual(['not-allowed', 'not-allowed'])
+    expect(editor.mergeAreas('b', 'a')).toBe(true)
+    expect(editor.getState().areas.map((a) => a.id)).toEqual(['b'])
+  })
+
+  it('drops a drawing in progress when create is taken away', async () => {
+    const { editor } = makeEditor()
+    editor.setMode('draw')
+    await editor.addPoint(free([0, 0]))
+    editor.setPermissions({ create: false })
+    expect(editor.getState()).toMatchObject({ mode: 'select', draft: [], canCreate: false })
+  })
+})

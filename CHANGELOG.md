@@ -8,6 +8,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `permissions`: a host can withhold creating areas (draw, cut, import) and deleting them (delete,
+  merge away) without making the editor read-only. Refused with the new `not-allowed` issue; the
+  toolbar and the inspector stop offering what is withheld.
+
 - "Follow roads" without a routing service: the border follows the streets the map is drawing, in
   any direction, as close as possible to the straight line between two clicks, never doubling back
   over the drawing, and crossing rivers or highways straight when the nearest bridge is far. Clicks
@@ -27,3 +31,7 @@ All notable changes to this project are documented here. The format follows
 - GeoJSON and KML import, GeoJSON export; coordinate parsing (decimal, DMS, `geo:` URIs).
 - Photon geocoder and OSRM router adapters.
 - English and Spanish; theming through shadcn-style design tokens.
+
+### Fixed
+
+- `Messages` overrides may name only the locales they add or change; every locale was required.

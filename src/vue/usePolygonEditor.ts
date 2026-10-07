@@ -18,7 +18,13 @@ import {
   type MaybeRefOrGetter,
 } from 'vue'
 import type { Map as MapLibreMap } from 'maplibre-gl'
-import { PolygonEditorCore, type EditorState, type Mode, type OverlapPolicy } from '../core/editor'
+import {
+  PolygonEditorCore,
+  type EditorState,
+  type Mode,
+  type OverlapPolicy,
+  type Permissions,
+} from '../core/editor'
 import { polygonArea, ringLength } from '../core/geo'
 import { fromGeoJSON, toFeatureCollection } from '../core/geojson'
 import { fromKML } from '../core/kml'
@@ -35,6 +41,8 @@ export interface PolygonEditorOptions {
   /** Called with a new array after every edit. */
   onUpdate?: (areas: Area[]) => void
   readonly?: MaybeRefOrGetter<boolean | undefined>
+  /** What the user may do besides reshaping and renaming; see `Permissions`. */
+  permissions?: MaybeRefOrGetter<Permissions | undefined>
   overlap?: MaybeRefOrGetter<OverlapPolicy | undefined>
   /** Decimal places coordinates are rounded to. Fixed for the editor's lifetime. */
   decimals?: number
@@ -81,6 +89,7 @@ export function usePolygonEditor(options: PolygonEditorOptions = {}) {
     decimals: options.decimals,
     overlap: toValue(options.overlap),
     readonly: toValue(options.readonly) ?? false,
+    permissions: toValue(options.permissions),
     router: toValue(options.router) ?? null,
     createId: options.createId,
     createProperties: options.createProperties ?? ((n) => ({ name: t('defaultName', { n }) })),
@@ -121,6 +130,10 @@ export function usePolygonEditor(options: PolygonEditorOptions = {}) {
   watch(
     () => toValue(options.readonly) ?? false,
     (r) => core.setReadonly(r),
+  )
+  watch(
+    () => toValue(options.permissions),
+    (p) => core.setPermissions(p ?? {}),
   )
   watch(
     () => toValue(options.overlap),
@@ -265,6 +278,12 @@ export function usePolygonEditor(options: PolygonEditorOptions = {}) {
     metrics,
     neighbours,
     nameOf,
+    /** Whether the area may be deleted or merged away. */
+    canDelete: (area: Area) => {
+      // Re-read with the state, so a part asking it re-renders when the areas do.
+      void state.value
+      return core.canDelete(area.id)
+    },
     setMode: (mode: Mode) => core.setMode(mode),
     undo: () => core.undo(),
     redo: () => core.redo(),

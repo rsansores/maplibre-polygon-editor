@@ -8,6 +8,7 @@ export type {
   EditorState,
   Mode,
   OverlapPolicy,
+  Permissions,
   StreetSource,
 } from './editor'
 export { MapBinding } from '../map/binding'

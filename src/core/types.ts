@@ -63,6 +63,7 @@ export type IssueCode =
   | 'cut-crosses-hole'
   | 'not-adjacent'
   | 'locked'
+  | 'not-allowed'
   | 'pinned'
   | 'route-fallback'
   | 'import-skipped'
