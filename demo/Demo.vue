@@ -2,7 +2,7 @@
 import { computed, defineAsyncComponent, nextTick, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { Map as MapLibreMap } from 'maplibre-gl'
-import { PolygonEditor, osrmRouter, photonGeocoder, type Area } from '../src'
+import { PolygonEditor, photonGeocoder, type Area } from '../src'
 import { basemapStyle, DEMO_BOUNDS, DEMO_CENTER, streetLayers } from './basemap'
 import { sampleAreas } from './sample'
 
@@ -15,7 +15,7 @@ const dark = ref(
   params.get('theme') === 'dark' ||
     (!params.has('theme') && (window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false)),
 )
-// `?helpers=0` starts with search and routing off (the browser tests use it: no network).
+// `?helpers=0` starts with place search off (the browser tests use it: no network).
 const helpers = ref(params.get('helpers') !== '0')
 if (params.get('lang') === 'es') locale.value = 'es'
 
@@ -28,10 +28,11 @@ const areas = ref<Area[]>(sampleAreas(names.value))
 
 const style = computed(() => basemapStyle(dark.value ? 'dark' : 'light', locale.value))
 
-// Public demo services, fine for a demo's traffic. A real deployment runs its
-// own (or plugs in any other geocoder/router) — the editor only sees a function.
+// The public Photon demo service, fine for a demo's traffic. A real deployment
+// runs its own (or plugs in any other geocoder) — the editor only sees a
+// function. "Follow roads" needs no service: it follows the streets the map
+// is already drawing.
 const geocoder = photonGeocoder({ url: 'https://photon.komoot.io', bbox: [-100.52, 20.5, -100.28, 20.7] })
-const router = osrmRouter({ url: 'https://router.project-osrm.org' })
 
 const editorRef = ref<InstanceType<typeof PolygonEditor>>()
 
@@ -62,8 +63,8 @@ const t = computed(() =>
         tagline: 'Editor de polígonos preciso para MapLibre: los bordes compartidos siguen compartidos.',
         reset: 'Restaurar ejemplo',
         clear: 'Vaciar',
-        helpers: 'Búsqueda y ruteo',
-        helpersNote: 'Usa los servidores públicos de demostración de Photon y OSRM.',
+        helpers: 'Búsqueda de lugares',
+        helpersNote: 'Usa el servidor público de demostración de Photon.',
         layout: 'Diseño propio',
         defaultLayout: 'Diseño por defecto',
         geojson: 'GeoJSON (v-model)',
@@ -72,8 +73,8 @@ const t = computed(() =>
         tagline: 'A precise polygon editor for MapLibre: shared borders stay shared.',
         reset: 'Reset sample',
         clear: 'Clear',
-        helpers: 'Search & routing',
-        helpersNote: 'Uses the public Photon and OSRM demo servers.',
+        helpers: 'Place search',
+        helpersNote: 'Uses the public Photon demo server.',
         layout: 'Custom layout',
         defaultLayout: 'Default layout',
         geojson: 'GeoJSON (v-model)',
@@ -120,7 +121,6 @@ const t = computed(() =>
         :map-options="{ maxBounds: DEMO_BOUNDS, minZoom: 11 }"
         :snap-layers="streetLayers"
         :geocoder="helpers ? geocoder : null"
-        :router="helpers ? router : null"
         @ready="onReady"
       />
     </main>

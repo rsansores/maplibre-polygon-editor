@@ -8,10 +8,15 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- "Follow roads" without a routing service: the border follows the streets the map is drawing, in
+  any direction, as close as possible to the straight line between two clicks, never doubling back
+  over the drawing, and crossing rivers or highways straight when the nearest bridge is far. Clicks
+  on an earlier border that lies on a street join the network, so a city can be cut again and again
+  along its streets; closing an area follows the streets back to its first corner.
 - `PolygonEditorCore`: a framework-agnostic editor for sets of polygons whose shared borders stay
   shared — draw, cut, merge, drag, insert and delete corners, typed coordinates, undo/redo.
 - Snapping to corners, borders and basemap streets; tracing along a border or street between two
-  clicks; optional routing along the road network with a plausibility check.
+  clicks; an optional custom router in place of the built-in street following.
 - Overlap policies (`clip`, `forbid`, `allow`), OGC validity rules, locked areas whose shared corners
   and borders are pinned.
 - `MapBinding` for MapLibre GL JS 5 and 6.

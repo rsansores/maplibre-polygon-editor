@@ -256,11 +256,7 @@ export function usePolygonEditor(options: PolygonEditorOptions = {}) {
     cursor,
     hint,
     geocoder,
-    // Re-evaluated on every state change, which `setRouter` emits.
-    hasRouter: computed(() => {
-      void state.value
-      return core.hasRouter
-    }),
+    canFollowRoads: computed(() => state.value.canFollowRoads),
     binding,
     t,
     locale,

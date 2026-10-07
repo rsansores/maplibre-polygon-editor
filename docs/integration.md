@@ -77,7 +77,7 @@ width, not the window's) the side panel moves under the map.
 | `mapOptions`     | `Partial<MapOptions>`           | —                                   | Anything else MapLibre takes (`maxBounds`, `minZoom`, `hash`, …).                           |
 | `snapLayers`     | `string[] \| (map) => string[]` | none                                | Basemap layers whose lines attract the cursor. [More](#snapping-to-streets).                |
 | `geocoder`       | `Geocoder \| null`              | `null`                              | Place search. Pasted coordinates work without one.                                          |
-| `router`         | `Router \| null`                | `null`                              | Enables "Follow roads".                                                                     |
+| `router`         | `Router \| null`                | `null`                              | Replaces the built-in street following with your own service.                               |
 | `overlap`        | `'clip' \| 'forbid' \| 'allow'` | `'clip'`                            | What a new drawing over an existing area does.                                              |
 | `decimals`       | `number`                        | `8`                                 | Coordinate precision (8 ≈ 1.1 mm). Fixed at creation.                                       |
 | `readonly`       | `boolean`                       | `false`                             | Show and select only.                                                                       |
@@ -148,7 +148,7 @@ form needs is on it:
 | `hint`                                                                                     | What the user should do next, translated.                                                                                                                               |
 | `cursor`                                                                                   | Position, snap kind and current segment length under the cursor.                                                                                                        |
 | `setMode(mode)`, `finish()`, `cancel()`, `undo()`, `redo()`                                | Drawing and history.                                                                                                                                                    |
-| `setSnapping(on)`, `setTracing(on)`, `setFollowRoads(on)`, `hasRouter`                     | Helper toggles.                                                                                                                                                         |
+| `setSnapping(on)`, `setTracing(on)`, `setFollowRoads(on)`                                  | Helper toggles.                                                                                                                                                         |
 | `select(id)`, `rename(id, name)`, `deleteArea(id)`, `merge(id, otherId)`, `neighbours(id)` | Whole areas.                                                                                                                                                            |
 | `setVertexPosition(position)`, `deleteVertex()`, `addPoint(position)`                      | Exact edits. `addPoint` adds a corner to the current drawing.                                                                                                           |
 | `metrics(area)`, `nameOf(area)`                                                            | Area (m²), perimeter (m), corner count; display name.                                                                                                                   |
@@ -266,9 +266,40 @@ it_, which is as good as the data. Snapping to another area is exact.
 Area geometry always attracts before streets: a shared border has to be exact; a street is only as
 good as the map data.
 
+## Following roads
+
+With `snapLayers` set, the toolbar offers **Follow roads**. Between two clicks on streets the border
+then follows the streets the map is drawing, with no service involved:
+
+- **In any direction.** One-way streets and turn restrictions do not exist here: a border is not a
+  car trip. (This is why a car router is the wrong tool — it loops around blocks and doubles back.)
+- **As close as possible to the straight line** between the two clicks. Among street paths, the
+  one that hugs the line wins over a shorter one further away; `straightness` (default 4) sets how
+  strongly.
+- **Never back over itself.** The path may not run along the drawing so far, so a click just past
+  a corner does not leave a spike.
+- **Straight across gaps.** Street crossings up to 80 m apart that no street joins — the two banks
+  of a river, the two sides of a highway — may be joined by a straight line, at four times the cost
+  of a street. In an ordinary grid a street is always cheaper; a long detour to a distant bridge is
+  not.
+- **Starting from a border.** A click on an existing area's border that lies on a street (say, an
+  earlier cut along that street) joins the street network too, so a city can be cut again and
+  again along its streets.
+- **Off the streets, straight.** A click in a field is a straight segment, without complaint. Only
+  when both clicks are on streets and no reasonable path joins them (more than `maxDetour`, 3×, the
+  straight distance) is the segment straight _and_ the user told why.
+
+Closing an area (clicking its first corner, Enter, or a double click) follows the streets back to
+the first corner the same way.
+
+The network is built from what is on screen around the two clicks, so both have to be in view —
+which they are, since the user just clicked them. A segment spanning a whole city at zoom 13 takes
+a few hundred milliseconds; at street zoom, a few tens.
+
 ## Search and routing services
 
 Both are plain functions; the editor never calls a service you did not give it.
+Neither is needed for following roads, above.
 
 ```ts
 type Geocoder = (
@@ -285,8 +316,12 @@ Adapters are included for two open-source services you can run yourself from a c
 import { photonGeocoder, osrmRouter } from 'maplibre-polygon-editor'
 
 const geocoder = photonGeocoder({ url: 'https://photon.example.org', bbox: [-118.6, 14.3, -86.5, 32.8] })
-const router = osrmRouter({ url: 'https://osrm.example.org', profile: 'driving' })
+// Only if you need a network the basemap does not draw. Use a profile that
+// ignores one-way streets (foot), never a driving one.
+const router = osrmRouter({ url: 'https://osrm.example.org', profile: 'foot' })
 ```
+
+A `router` replaces the built-in street following; most hosts should not pass one.
 
 Writing your own is a few lines — for example, a geocoder that asks your backend, which in turn asks
 whatever provider you pay for:
@@ -299,9 +334,9 @@ const geocoder: Geocoder = async (text, { near, signal }) => {
 ```
 
 Both are optional and both fail soft. A search that errors or finds nothing says so and the map
-stays fully usable. A route is used only when both clicks snapped to streets and the route is
-plausible — no more than `maxDetour` (3×) the straight distance; otherwise the segment is straight
-and the user is told why. A slow route is cancelled if the user cancels the drawing.
+stays fully usable. A router's route is used only when both clicks snapped to streets and the
+route is plausible — no more than `maxDetour` (3×) the straight distance; otherwise the segment is
+straight and the user is told why. A slow route is cancelled if the user cancels the drawing.
 
 ## Locked areas and read-only mode
 
@@ -389,7 +424,7 @@ messages cover all of them.
 | `not-adjacent`        | A merge between areas that share no border.                                    |
 | `locked`              | An edit on a locked area.                                                      |
 | `pinned`              | A move, deletion or insertion on a corner or border shared with a locked area. |
-| `route-fallback`      | "Follow roads" found no plausible route; the segment is straight.              |
+| `route-fallback`      | "Follow roads" found no street path near the line; the segment is straight.    |
 | `import-skipped`      | Shapes in an import that are not valid polygons (`count` says how many).       |
 | `invalid-coordinates` | Typed coordinates outside the valid range.                                     |
 

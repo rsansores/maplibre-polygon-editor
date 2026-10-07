@@ -3,6 +3,7 @@ import { area, free, square } from '../test-support/fixtures'
 import { PolygonEditorCore, type EditorOptions } from './editor'
 import { polygonArea } from './geo'
 import { linkedVertices } from './topology'
+import type { SnapResult } from './snap'
 import type { Area, Issue, Position } from './types'
 
 let seq = 0
@@ -526,5 +527,140 @@ describe('borders shared with a locked area', () => {
   it('still lets the free corners move', () => {
     const { editor } = withLockedNeighbour()
     expect(editor.setVertex({ areaId: 'a', ring: 0, index: 0 }, [-0.001, 0])).toBe(true)
+  })
+})
+
+describe('following streets (no router: the network the map draws)', () => {
+  // Streets every 0.001° (~111 m), each drawn as one long line, as a map would.
+  const S = 0.001
+  const streets = (): Position[][] => {
+    const lines: Position[][] = []
+    for (let i = 0; i <= 6; i++) {
+      lines.push([
+        [0, i * S],
+        [6 * S, i * S],
+      ])
+      lines.push([
+        [i * S, 6 * S],
+        [i * S, 0],
+      ])
+    }
+    return lines
+  }
+  const onStreetLine = (x: number) => Math.abs(x / S - Math.round(x / S)) < 1e-4
+  const isOnGrid = (p: Position) => onStreetLine(p[0]) || onStreetLine(p[1])
+  const street = (position: Position): SnapResult => ({ position, kind: 'line' })
+
+  function city() {
+    const made = makeEditor()
+    made.editor.setStreetSource(() => streets())
+    made.editor.setFollowRoads(true)
+    // One big area over the whole city, drawn freely beyond its last streets.
+    made.editor.setAreas([area('city', square(-0.5 * S, -0.5 * S, 7 * S))])
+    return made
+  }
+
+  it('is available once the map supplies streets', () => {
+    const { editor } = city()
+    expect(editor.getState()).toMatchObject({ canFollowRoads: true, followRoads: true })
+  })
+
+  it('cuts the city along streets, in any direction, near the line the user clicked', async () => {
+    const { editor } = city()
+    editor.setMode('cut')
+    await editor.addPoint(free([-S, 1.5 * S])) // outside, west
+    await editor.addPoint(street([0, 1.5 * S])) // on the first north–south street
+    await editor.addPoint(street([5 * S, 4.5 * S])) // across town, on another
+    await editor.addPoint(free([7.5 * S, 4.5 * S])) // outside, east
+    const path = editor.draftPath()
+    // Between the two street clicks the cut runs along streets only.
+    const inner = path.slice(2, -2)
+    expect(inner.length).toBeGreaterThan(4)
+    for (const p of inner) expect(isOnGrid(p)).toBe(true)
+    expect(editor.finish()).toBe(true)
+    expect(editor.getState().areas).toHaveLength(2)
+  })
+
+  it('cuts again from a point on an earlier cut, which lies on a street', async () => {
+    const { editor } = city()
+    editor.setMode('cut')
+    await editor.addPoint(free([-S, 2 * S]))
+    await editor.addPoint(street([0.5 * S, 2 * S]))
+    await editor.addPoint(street([5.5 * S, 2 * S]))
+    await editor.addPoint(free([7.5 * S, 2 * S]))
+    expect(editor.finish()).toBe(true)
+
+    // The second cut starts on the first cut's border — snapped to the area,
+    // not to the street — and still follows the streets from there.
+    editor.setMode('cut')
+    await editor.addPoint({ position: [2.5 * S, 2 * S], kind: 'edge', areaId: 'city' })
+    await editor.addPoint(street([4 * S, 5.5 * S]))
+    await editor.addPoint(free([4 * S, 7.5 * S]))
+    const inner = editor.draftPath().slice(1, -2)
+    expect(inner.length).toBeGreaterThan(2)
+    for (const p of inner) expect(isOnGrid(p)).toBe(true)
+    expect(editor.finish()).toBe(true)
+    expect(editor.getState().areas).toHaveLength(3)
+  })
+
+  it('draws straight to and from a click off the streets, without complaining', async () => {
+    const { editor, issues } = city()
+    editor.setMode('draw')
+    await editor.addPoint(street([S, S]))
+    await editor.addPoint(free([1.5 * S, 1.5 * S])) // inside a block
+    expect(editor.draftPath()).toHaveLength(2)
+    expect(issues).toEqual([])
+  })
+
+  it('never doubles back along what it just drew', async () => {
+    const { editor } = makeEditor()
+    editor.setStreetSource(() => streets())
+    editor.setFollowRoads(true)
+    editor.setMode('draw')
+    // The second click is just past a corner: the nearest way north is back
+    // west along the street just drawn, which would leave a spike. It goes on
+    // east to the next corner instead.
+    await editor.addPoint(street([0.5 * S, S]))
+    await editor.addPoint(street([4.2 * S, S]))
+    await editor.addPoint(street([4.2 * S, 4 * S]))
+    const path = editor.draftPath()
+    const keys = path.map((p) => `${p[0].toFixed(7)},${p[1].toFixed(7)}`)
+    expect(new Set(keys).size).toBe(keys.length)
+    expect(path.some((p) => Math.abs(p[0] - 5 * S) < 1e-9 && Math.abs(p[1] - S) < 1e-9)).toBe(true)
+  })
+
+  it('closes the area along the streets too', async () => {
+    const { editor } = makeEditor()
+    editor.setStreetSource(() => streets())
+    editor.setFollowRoads(true)
+    editor.setMode('draw')
+    for (const p of [
+      [0.5 * S, S],
+      [4.5 * S, S],
+      [4.5 * S, 4 * S],
+      [S, 4.5 * S],
+    ] as Position[])
+      await editor.addPoint(street(p))
+    // Back to the first corner: down x = S and along y = S, not across the block.
+    await editor.addPoint(street([0.5 * S, S]))
+    const ring = editor.getState().areas[0]!.rings[0]!
+    expect(ring.some((p) => Math.abs(p[0] - S) < 1e-9 && Math.abs(p[1] - S) < 1e-9)).toBe(true)
+  })
+
+  it('draws a whole area along streets with the border following them', async () => {
+    const { editor } = makeEditor()
+    editor.setStreetSource(() => streets())
+    editor.setFollowRoads(true)
+    editor.setMode('draw')
+    for (const p of [
+      [0.5 * S, S],
+      [4.5 * S, S],
+      [4.5 * S, 4 * S],
+      [0.5 * S, 4 * S],
+    ] as Position[])
+      await editor.addPoint(street(p))
+    expect(editor.finish()).toBe(true)
+    const ring = editor.getState().areas[0]!.rings[0]!
+    for (const p of ring) expect(isOnGrid(p)).toBe(true)
   })
 })

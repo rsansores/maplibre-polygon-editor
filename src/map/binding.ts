@@ -74,6 +74,10 @@ export class MapBinding {
     this.tolerance = options.snapTolerancePx ?? 12
     this.state = core.getState()
     this.cleanups.push(core.on('state', (s) => this.onState(s)))
+    if (options.snapLayers) {
+      core.setStreetSource((from, to) => this.streetsAround(from, to))
+      this.cleanups.push(() => core.setStreetSource(null))
+    }
     if (map.isStyleLoaded()) this.setup()
     else this.listen('load', () => this.setup())
     // A host that swaps the basemap style wipes our sources; put them back.
@@ -320,20 +324,12 @@ export class MapBinding {
     return ids.filter((id) => this.map.getLayer(id))
   }
 
-  /** Street (or any reference) lines rendered around a screen point. */
-  private referenceLines(point: { x: number; y: number }): Position[][] {
+  /** The line geometry of rendered features, as polylines. */
+  private linesIn(box: [[number, number], [number, number]]): Position[][] {
     const layers = this.snapLayerIds()
     if (layers.length === 0) return []
-    const r = this.tolerance
-    const features = this.map.queryRenderedFeatures(
-      [
-        [point.x - r, point.y - r],
-        [point.x + r, point.y + r],
-      ],
-      { layers },
-    )
     const lines: Position[][] = []
-    for (const f of features) {
+    for (const f of this.map.queryRenderedFeatures(box, { layers })) {
       const g = f.geometry
       if (g.type === 'LineString') lines.push(g.coordinates as Position[])
       else if (g.type === 'MultiLineString' || g.type === 'Polygon')
@@ -343,16 +339,44 @@ export class MapBinding {
     return lines
   }
 
+  /** Street (or any reference) lines rendered around a screen point. */
+  private referenceLines(point: { x: number; y: number }, radius: number): Position[][] {
+    return this.linesIn([
+      [point.x - radius, point.y - radius],
+      [point.x + radius, point.y + radius],
+    ])
+  }
+
+  /**
+   * The streets drawn around two points, for "follow roads": the box spanning
+   * both, padded so a path may swing a little wide, clipped to the view.
+   */
+  private streetsAround(from: Position, to: Position): Position[][] {
+    const a = this.map.project(from)
+    const b = this.map.project(to)
+    const pad = Math.max(120, 0.5 * Math.hypot(a.x - b.x, a.y - b.y))
+    const canvas = this.map.getCanvas()
+    const clampX = (x: number) => Math.max(0, Math.min(canvas.clientWidth, x))
+    const clampY = (y: number) => Math.max(0, Math.min(canvas.clientHeight, y))
+    return this.linesIn([
+      [clampX(Math.min(a.x, b.x) - pad), clampY(Math.min(a.y, b.y) - pad)],
+      [clampX(Math.max(a.x, b.x) + pad), clampY(Math.max(a.y, b.y) + pad)],
+    ])
+  }
+
   private snapAt(e: MapMouseEvent | MapTouchEvent, ignore?: (p: Position) => boolean): SnapResult {
     const raw: Position = [e.lngLat.lng, e.lngLat.lat]
     const free = (e.originalEvent as MouseEvent).altKey === true
     if (!this.state.snapping || free) return { position: raw, kind: 'none' }
     const drafting = this.state.mode !== 'select'
+    // Following roads, the user means "this street": streets reach further.
+    const lineTolerance = this.state.followRoads ? this.tolerance * 2.5 : this.tolerance
     return snap(raw, e.point, {
       project: (p) => this.map.project(p),
       tolerancePx: this.tolerance,
+      lineTolerancePx: lineTolerance,
       areas: this.state.areas,
-      lines: this.referenceLines(e.point),
+      lines: this.referenceLines(e.point, lineTolerance),
       points: drafting ? this.state.draft.map((d) => d.position) : undefined,
       ignore,
     })

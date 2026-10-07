@@ -15,6 +15,7 @@ anyone who needs to trust the geometry.
    snap.ts          where a click meant to land
    trace.ts         following a border, a street, or a route between two clicks
    split.ts         cutting a polygon along a line
+   streets.ts       an undirected street network from the map's lines; the path closest to a line
    geojson.ts kml.ts coordinates.ts format.ts   input, output, display
    history.ts       undo/redo over immutable snapshots
    editor.ts        PolygonEditorCore: modes, selection, draft, gestures, commits
@@ -127,10 +128,30 @@ two clicks on the same street polyline (`traceAlongLine`) — the snap result ca
 landed on, so tracing works even after the map has moved between clicks. Tracing area borders is
 off in cut mode, where the line is meant to go _across_ an area.
 
-With a router and "follow roads" on, two clicks on streets that cannot be traced are routed. The
-route is accepted only when it is at most `maxDetour` times the straight distance; a longer one
-almost always means the network is missing a connection, and the straight line is what the user
-meant. A route that arrives after the drawing was cancelled is dropped (a token per draft).
+With "follow roads" on, the segment between two clicks follows the streets (`streets.ts`). A car
+router answers the wrong question for a border — it respects one-way streets and turn restrictions
+and prefers fast roads, so the "route" between two corners of a block loops around the block or
+doubles back — so the editor builds its own network instead, on every click:
+
+1. **Lines.** The binding hands over the street lines the map renders in a box around both
+   clicks (`queryRenderedFeatures` on the snap layers).
+2. **Noding.** Lines are split wherever another crosses them or another's end rests on them, and
+   ends within 1.5 m are merged — which also rejoins a street that tile clipping cut in two. The
+   result is an undirected graph in local metres.
+3. **Gaps.** Crossings and dead ends up to 80 m apart that no street joins get a straight link at
+   four times the cost per metre: across a river or a highway when the bridge is far, never instead
+   of an ordinary block.
+4. **Attach.** Each click joins the network at the nearest street within 4 m (splitting it), so a
+   click on an earlier cut that runs along a street joins too. A click further off is a straight
+   segment, by design.
+5. **Search.** Dijkstra, where an edge costs its length × (1 + straightness × its distance from the
+   straight line ÷ the line's length), so the path hugs the line the user meant. Edges that run
+   along the drawing so far are excluded, so a path never doubles back over it.
+6. **Check.** A path longer than `maxDetour` (3×) the straight distance is refused, and the
+   segment is straight.
+
+A host-supplied `router` replaces steps 1–5. Its route is checked the same way, and one that
+arrives after the drawing was cancelled is dropped (a token per draft).
 
 ## Cutting
 

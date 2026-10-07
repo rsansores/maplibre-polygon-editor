@@ -34,6 +34,8 @@ export interface SnapContext {
   project: (p: Position) => ScreenPoint
   /** How far, in pixels, a target may be and still attract the cursor. */
   tolerancePx: number
+  /** The same for reference lines, when they should reach further (default `tolerancePx`). */
+  lineTolerancePx?: number
   /** Areas whose vertices and edges attract. */
   areas: readonly Area[]
   /** Reference polylines (e.g. streets from the basemap) that attract. */
@@ -54,12 +56,13 @@ const toPair = (s: ScreenPoint): [number, number] => [s.x, s.y]
  */
 export function snap(raw: Position, cursor: ScreenPoint, ctx: SnapContext): SnapResult {
   const limitSq = ctx.tolerancePx * ctx.tolerancePx
+  const lineLimitSq = (ctx.lineTolerancePx ?? ctx.tolerancePx) ** 2
   const c = toPair(cursor)
   const ignore = ctx.ignore ?? (() => false)
 
   let best: { result: SnapResult; distanceSq: number; rank: number } | null = null
   const offer = (result: SnapResult, distanceSq: number, rank: number) => {
-    if (distanceSq > limitSq) return
+    if (distanceSq > (rank >= 2 ? lineLimitSq : limitSq)) return
     if (!best || rank < best.rank || (rank === best.rank && distanceSq < best.distanceSq)) {
       best = { result, distanceSq, rank }
     }

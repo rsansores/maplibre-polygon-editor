@@ -104,7 +104,7 @@ async function onFile(event: Event) {
           <span>{{ t('tracing') }}</span>
         </button>
         <button
-          v-if="editor.hasRouter.value"
+          v-if="state.canFollowRoads"
           type="button"
           class="pe-btn"
           :aria-pressed="state.followRoads"

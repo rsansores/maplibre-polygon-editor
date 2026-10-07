@@ -4,6 +4,7 @@ import { History } from './history'
 import { splitPolygon } from './split'
 import type { SnapResult } from './snap'
 import { insertVertex, locateOnRing, moveVertex, nodeAreas, removeVertex, vertexAt } from './topology'
+import { streetPath } from './streets'
 import { routeBetween, traceBetween, type Router } from './trace'
 import type { Area, EdgeRef, Issue, Position, Ring, VertexRef } from './types'
 import { findOverlap, polygonIssues } from './validate'
@@ -23,6 +24,9 @@ import { findOverlap, polygonIssues } from './validate'
  */
 
 export type Mode = 'select' | 'draw' | 'cut'
+
+/** The street lines around two points (in any order, as drawn by the map). */
+export type StreetSource = (from: Position, to: Position) => Position[][]
 
 /**
  * What happens when a newly drawn area covers part of an existing one:
@@ -44,9 +48,18 @@ export interface EditorOptions {
   overlap?: OverlapPolicy
   /** Overlap smaller than this many square metres is numerical noise, not an overlap. */
   overlapToleranceM2?: number
-  /** Optional street router for "follow roads". */
+  /**
+   * Optional router for "follow roads", replacing the built-in street path.
+   * It must ignore one-way streets and turn restrictions (a walking profile,
+   * not a driving one): a border is not a car trip.
+   */
   router?: Router | null
-  /** A routed segment longer than this multiple of the straight distance falls back to straight. */
+  /**
+   * How strongly "follow roads" prefers streets near the straight line
+   * between two clicks over shorter ones further away. Default 4.
+   */
+  straightness?: number
+  /** A followed segment longer than this multiple of the straight distance falls back to straight. */
   maxDetour?: number
   /** New area ids. Defaults to `crypto.randomUUID()`. */
   createId?: () => string
@@ -73,6 +86,8 @@ export interface EditorState {
   snapping: boolean
   tracing: boolean
   followRoads: boolean
+  /** "Follow roads" is available: there is a street source (the map) or a router. */
+  canFollowRoads: boolean
   canUndo: boolean
   canRedo: boolean
   readonly: boolean
@@ -105,6 +120,7 @@ export class PolygonEditorCore {
   private snapping = true
   private tracing = true
   private followRoads = false
+  private streetSource: StreetSource | null = null
   private readonly history = new History<Area[]>()
   private gesture: {
     before: Area[]
@@ -136,6 +152,7 @@ export class PolygonEditorCore {
       overlapToleranceM2: options.overlapToleranceM2 ?? 0.01,
       router: options.router ?? null,
       maxDetour: options.maxDetour ?? 3,
+      straightness: options.straightness ?? 4,
       createId: options.createId ?? defaultId,
       createProperties: options.createProperties ?? (() => ({})),
       readonly: options.readonly ?? false,
@@ -176,6 +193,7 @@ export class PolygonEditorCore {
       snapping: this.snapping,
       tracing: this.tracing,
       followRoads: this.followRoads,
+      canFollowRoads: this.canFollowRoads,
       canUndo: this.history.canUndo,
       canRedo: this.history.canRedo,
       readonly: this.options.readonly,
@@ -191,8 +209,9 @@ export class PolygonEditorCore {
     return this.draft.flatMap((p) => [...p.via, p.position])
   }
 
-  get hasRouter(): boolean {
-    return this.options.router !== null
+  /** "Follow roads" can work: the map supplies streets, or a router is set. */
+  get canFollowRoads(): boolean {
+    return this.streetSource !== null || this.options.router !== null
   }
 
   // ── Configuration ───────────────────────────────────────────────────────
@@ -219,7 +238,18 @@ export class PolygonEditorCore {
 
   setRouter(router: Router | null): void {
     this.options.router = router
-    if (!router) this.followRoads = false
+    if (!this.canFollowRoads) this.followRoads = false
+    this.notify()
+  }
+
+  /**
+   * Where "follow roads" gets its streets: the street lines around two points.
+   * The map binding sets this to what the basemap draws; a host can supply
+   * its own network instead.
+   */
+  setStreetSource(source: StreetSource | null): void {
+    this.streetSource = source
+    if (!this.canFollowRoads) this.followRoads = false
     this.notify()
   }
 
@@ -238,7 +268,7 @@ export class PolygonEditorCore {
   }
 
   setFollowRoads(on: boolean): void {
-    this.followRoads = on && this.hasRouter
+    this.followRoads = on && this.canFollowRoads
     this.notify()
   }
 
@@ -279,31 +309,29 @@ export class PolygonEditorCore {
   async addPoint(snap: SnapResult): Promise<void> {
     if (this.options.readonly || this.mode === 'select' || this.pending) return
     const position = this.round(snap.position)
+    const next: SnapResult = { ...snap, position }
     const first = this.draft[0]
     const last = this.draft[this.draft.length - 1]
     if (last && samePosition(last.position, position, this.epsilon)) return
 
-    if (
+    const closing =
       this.mode === 'draw' &&
-      first &&
+      first !== undefined &&
       this.draft.length >= 3 &&
       samePosition(first.position, position, this.epsilon)
-    ) {
-      this.finish()
-      return
-    }
 
     let via: Position[] = []
     if (last) {
-      const traced = this.tracing
-        ? traceBetween(last.snap, { ...snap, position }, this.areas, this.edgeEpsilon, {
-            areas: this.mode === 'draw',
-            lines: true,
-          })
-        : null
-      if (traced) {
-        via = traced.map((p) => this.round(p))
-      } else if (this.followRoads && this.options.router && isLineSnap(last.snap) && isLineSnap(snap)) {
+      const followed = this.followVia(last.snap, next, this.draftPath())
+      if (followed) {
+        via = followed
+      } else if (
+        !closing &&
+        this.followRoads &&
+        this.options.router &&
+        isLineSnap(last.snap) &&
+        isLineSnap(snap)
+      ) {
         const token = ++this.draftToken
         this.pending = true
         this.notify()
@@ -319,13 +347,60 @@ export class PolygonEditorCore {
           this.notify()
           return
         }
-        if (routed) via = routed.map((p) => this.round(p))
+        if (routed) via = this.cleanVia(routed, last.position, position)
         else this.emit('issue', { code: 'route-fallback' })
       }
     }
 
-    this.draft = [...this.draft, { position, snap: { ...snap, position }, via }]
+    if (closing) {
+      this.finish(via)
+      return
+    }
+    this.draft = [...this.draft, { position, snap: next, via }]
     this.notify()
+  }
+
+  /**
+   * The vertices between two clicks that are not a straight line: a traced
+   * border or street, or — with "follow roads" — the street path closest to
+   * the straight line, never running along `drawn` (the drawing so far).
+   * `null` for a straight segment.
+   */
+  private followVia(from: SnapResult, to: SnapResult, drawn: Position[]): Position[] | null {
+    const following = this.followRoads && this.canFollowRoads
+    // Tracing a neighbour's border wins: a shared border must be exact. With
+    // "follow roads" on, streets are followed through the whole network
+    // rather than along the one line the two clicks happened to snap to.
+    const traced = this.tracing
+      ? traceBetween(from, to, this.areas, this.edgeEpsilon, {
+          areas: this.mode === 'draw',
+          lines: !following,
+        })
+      : null
+    if (traced && traced.length > 0) return this.cleanVia(traced, from.position, to.position)
+    if (!following || this.options.router || !this.streetSource) return null
+    const result = streetPath(this.streetSource(from.position, to.position), from.position, to.position, {
+      straightness: this.options.straightness,
+      maxDetour: this.options.maxDetour,
+      avoid: drawn,
+    })
+    if ('path' in result) return this.cleanVia(result.path, from.position, to.position)
+    // A click off the streets (a field, a forest) is a straight segment by
+    // design; only a failure between two street points is worth a word.
+    if (result.reason !== 'off-street') this.emit('issue', { code: 'route-fallback' })
+    return null
+  }
+
+  /** Rounded intermediate vertices, without repeats or copies of the two clicks. */
+  private cleanVia(path: Position[], from: Position, to: Position): Position[] {
+    const out: Position[] = []
+    for (const raw of path) {
+      const p = this.round(raw)
+      const previous = out[out.length - 1] ?? from
+      if (samePosition(p, previous, this.epsilon) || samePosition(p, to, this.epsilon)) continue
+      out.push(p)
+    }
+    return out
   }
 
   /** Undo the last click of the draft (with whatever it traced). */
@@ -344,10 +419,27 @@ export class PolygonEditorCore {
     }
   }
 
-  /** Finish the draft: create an area (draw mode) or cut one (cut mode). */
-  finish(): boolean {
+  /**
+   * Finish the draft: create an area (draw mode) or cut one (cut mode). A
+   * drawn area closes from its last corner back to its first the same way a
+   * click would get there — along a border or the streets when it can.
+   */
+  finish(closingVia?: Position[]): boolean {
     if (this.options.readonly || this.pending) return false
-    const ok = this.mode === 'draw' ? this.finishArea() : this.mode === 'cut' ? this.finishCut() : false
+    let ok = false
+    if (this.mode === 'draw') {
+      const first = this.draft[0]
+      const last = this.draft[this.draft.length - 1]
+      const closing =
+        closingVia ??
+        (first && last && this.draft.length >= 3
+          ? this.followVia(last.snap, first.snap, this.draftPath())
+          : null) ??
+        []
+      ok = this.finishArea(closing)
+    } else if (this.mode === 'cut') {
+      ok = this.finishCut()
+    }
     if (ok) {
       this.draft = []
       this.notify()
@@ -355,11 +447,12 @@ export class PolygonEditorCore {
     return ok
   }
 
-  private finishArea(): boolean {
+  private finishArea(closing: Position[]): boolean {
     const ring = dedupeRing(
-      this.draftPath().map((p) => this.round(p)),
+      [...this.draftPath(), ...closing].map((p) => this.round(p)),
       this.epsilon,
     )
+
     const problems = polygonIssues([ring], this.epsilon)
     if (problems.length > 0) return this.refuse({ code: problems[0]! })
 

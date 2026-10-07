@@ -1,7 +1,15 @@
 // Framework-agnostic entry point: `maplibre-polygon-editor/core`.
 // Everything here runs without Vue; the map binding needs only maplibre-gl.
 export { PolygonEditorCore } from './editor'
-export type { DraftPoint, EditorEvents, EditorOptions, EditorState, Mode, OverlapPolicy } from './editor'
+export type {
+  DraftPoint,
+  EditorEvents,
+  EditorOptions,
+  EditorState,
+  Mode,
+  OverlapPolicy,
+  StreetSource,
+} from './editor'
 export { MapBinding } from '../map/binding'
 export type { MapBindingOptions, MapTheme } from '../map/binding'
 
@@ -12,6 +20,8 @@ export type { Router } from './trace'
 export { snap } from './snap'
 export { traceAlongAreas, traceAlongLine, routeBetween } from './trace'
 export { splitPolygon } from './split'
+export { streetPath } from './streets'
+export type { StreetPathOptions, StreetPathResult } from './streets'
 export { linkedVertices, moveVertex, insertVertex, removeVertex, nodeAreas } from './topology'
 export { polygonIssues, findOverlap, ringSelfIntersects } from './validate'
 export { overlapArea, subtract, unite, intersect } from './clip'
