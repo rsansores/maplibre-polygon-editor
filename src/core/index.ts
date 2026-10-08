@@ -6,8 +6,10 @@ export type {
   EditorEvents,
   EditorOptions,
   EditorState,
+  LockedOverlapPolicy,
   Mode,
   OverlapPolicy,
+  Permissions,
   StreetSource,
 } from './editor'
 export { MapBinding } from '../map/binding'
@@ -23,14 +25,16 @@ export { splitPolygon } from './split'
 export { streetPath } from './streets'
 export type { StreetPathOptions, StreetPathResult } from './streets'
 export { linkedVertices, moveVertex, insertVertex, removeVertex, nodeAreas } from './topology'
-export { polygonIssues, findOverlap, ringSelfIntersects } from './validate'
-export { overlapArea, subtract, unite, intersect } from './clip'
+export { polygonIssues, findOverlap, overlaps, ringSelfIntersects } from './validate'
+export type { OverlapOptions } from './validate'
+export { overlapThickness, subtract, unite, intersect } from './clip'
 export {
   distance,
   pathLength,
   ringLength,
   ringArea,
   polygonArea,
+  polygonThickness,
   pointInPolygon,
   bounds,
   roundPosition,

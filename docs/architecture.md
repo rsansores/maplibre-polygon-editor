@@ -96,10 +96,19 @@ edge bends by at most that amount when the crossing point is inserted into it �
 2. no ring crosses _or touches_ itself (a vertex resting on a non-adjacent edge is a self-touch);
 3. holes do not cross the outer ring and lie inside it.
 
-On top of that, unless the overlap policy is `allow`, no two areas may share more than
-`overlapToleranceM2` (0.01 m²) of ground. Overlap is measured as the area of the intersection, so
-touching along a border is zero. Checks run only for the areas an edit changed, against areas whose
+On top of that, unless the overlap policy is `allow`, no two areas may overlap. Overlap is measured
+by thickness, not area: two areas overlap when some connected piece of their intersection is
+thicker than `overlapToleranceM` (0.01 m), a piece's thickness being `2 · area / perimeter` in
+metres (`overlaps`, `overlapThickness`). Touching along a border is zero. So is the hair-thin sliver
+left where a corner rounded to `decimals` sits on the interior of a locked neighbour's edge: its
+area grows with the border's length, its thickness stays at the rounding step (~1.1 mm at 8
+decimals). The same thickness decides whether a piece a clip leaves behind is a piece or a sliver
+to drop. Checks run only for the areas an edit changed, against areas whose
 bounding boxes touch theirs.
+
+With `lockedOverlap: 'forbid'`, overlapping a locked area by more than the same tolerance is refused
+regardless of the overlap policy: it is checked first, so a drawing over both a locked area and an
+unlocked one is refused rather than trimmed.
 
 A refused edit leaves the state as it was and emits an `issue`. A draft that cannot be finished
 stays on screen.

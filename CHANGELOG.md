@@ -6,7 +6,28 @@ All notable changes to this project are documented here. The format follows
 
 ## Unreleased
 
+### Changed
+
+- **Breaking:** overlap is measured by thickness, not area. `overlapToleranceM2` (square metres) is
+  replaced by `overlapToleranceM` (metres, default `0.01`): two areas overlap when some connected
+  piece of their intersection has `2 · area / perimeter` above it. A border clipped onto a locked
+  neighbour's edge leaves a rounding sliver whose area grows with the border's length, so an area
+  tolerance called neighbours that merely share a border overlapping. `overlapArea` is replaced by
+  `overlapThickness`; `overlaps` and `polygonThickness` are new. The integration guide gives the
+  same rule in PostGIS.
+
 ### Added
+
+- `listed`: a host can keep areas out of `PolygonEditorAreaList` while they stay on the map — e.g.
+  locked areas shown only for context. Default: every area is listed.
+
+- `lockedOverlap: 'forbid'`: a drawing, edit or import that would cover a locked area is refused
+  with the new `overlap-locked` issue instead of trimmed, while overlaps with unlocked areas keep
+  following `overlap`. The default, `'clip'`, keeps locked areas under `overlap` as before.
+
+- `permissions`: a host can withhold creating areas (draw, cut, import) and deleting them (delete,
+  merge away) without making the editor read-only. Refused with the new `not-allowed` issue; the
+  toolbar and the inspector stop offering what is withheld.
 
 - "Follow roads" without a routing service: the border follows the streets the map is drawing, in
   any direction, as close as possible to the straight line between two clicks, never doubling back
@@ -27,3 +48,7 @@ All notable changes to this project are documented here. The format follows
 - GeoJSON and KML import, GeoJSON export; coordinate parsing (decimal, DMS, `geo:` URIs).
 - Photon geocoder and OSRM router adapters.
 - English and Spanish; theming through shadcn-style design tokens.
+
+### Fixed
+
+- `Messages` overrides may name only the locales they add or change; every locale was required.

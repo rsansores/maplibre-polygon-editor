@@ -1,5 +1,12 @@
 import { subtract, unite } from './clip'
-import { dedupeRing, polygonArea, roundPosition, samePosition, segmentIntersection } from './geo'
+import {
+  dedupeRing,
+  polygonArea,
+  polygonThickness,
+  roundPosition,
+  samePosition,
+  segmentIntersection,
+} from './geo'
 import { History } from './history'
 import { splitPolygon } from './split'
 import type { SnapResult } from './snap'
@@ -38,6 +45,16 @@ export type StreetSource = (from: Position, to: Position) => Position[][]
  */
 export type OverlapPolicy = 'clip' | 'forbid' | 'allow'
 
+/**
+ * What happens when an area would cover part of a *locked* one:
+ *
+ * - `clip` (default): nothing special — locked areas follow `overlap` like
+ *   the rest, so a drawing over one is trimmed against it by default.
+ * - `forbid`: the operation is refused with `overlap-locked`, whatever
+ *   `overlap` says. Overlaps with unlocked areas still follow `overlap`.
+ */
+export type LockedOverlapPolicy = 'forbid' | 'clip'
+
 export interface EditorOptions {
   /**
    * Decimal places every coordinate is rounded to. 8 places is about 1.1 mm;
@@ -46,8 +63,15 @@ export interface EditorOptions {
    */
   decimals?: number
   overlap?: OverlapPolicy
-  /** Overlap smaller than this many square metres is numerical noise, not an overlap. */
-  overlapToleranceM2?: number
+  /** Overlaps with locked areas: like any other (`clip`, default) or refused (`forbid`). */
+  lockedOverlap?: LockedOverlapPolicy
+  /**
+   * Shared ground no thicker than this many metres is rounding, not an
+   * overlap. Thickness is `2 · area / perimeter` of each connected piece of
+   * the intersection, so it is the width of a sliver whatever its length.
+   * Default `0.01` (1 cm), well above the rounding at 8 decimals (~1.1 mm).
+   */
+  overlapToleranceM?: number
   /**
    * Optional router for "follow roads", replacing the built-in street path.
    * It must ignore one-way streets and turn restrictions (a walking profile,
@@ -66,6 +90,20 @@ export interface EditorOptions {
   /** Properties for a new area; `index` is 1-based over the areas that exist. */
   createProperties?: (index: number) => Record<string, unknown>
   readonly?: boolean
+  /** What the user may do besides reshaping and renaming. Everything, by default. */
+  permissions?: Permissions
+}
+
+/**
+ * Rights a host can withhold without making the editor read-only — for users
+ * who may reshape the areas they have but not add or remove any. An action
+ * withheld is refused with `not-allowed`; the Vue parts do not offer it.
+ */
+export interface Permissions {
+  /** Draw a new area, cut one in two (the cut makes a new area) or import. Default `true`. */
+  create?: boolean
+  /** Whether `area` may be deleted, or merged away — a merge deletes one of the two. Default: every area. */
+  delete?: (area: Area) => boolean
 }
 
 /** One click of the draft, with the vertices tracing or routing put before it. */
@@ -91,6 +129,8 @@ export interface EditorState {
   canUndo: boolean
   canRedo: boolean
   readonly: boolean
+  /** New areas may be drawn, cut or imported; see `Permissions.create`. */
+  canCreate: boolean
 }
 
 export interface EditorEvents {
@@ -103,6 +143,11 @@ export interface EditorEvents {
 }
 
 type Listener<K extends keyof EditorEvents> = EditorEvents[K]
+
+const permissionsWith = (permissions: Permissions = {}): Required<Permissions> => ({
+  create: permissions.create ?? true,
+  delete: permissions.delete ?? (() => true),
+})
 
 const defaultId = () =>
   typeof crypto !== 'undefined' && 'randomUUID' in crypto
@@ -141,7 +186,8 @@ export class PolygonEditorCore {
   readonly epsilon: number
   /** A vertex closer than this to an edge lies on it (covers rounding). */
   readonly edgeEpsilon: number
-  private options: Required<Omit<EditorOptions, 'decimals'>>
+  private options: Required<Omit<EditorOptions, 'decimals' | 'permissions'>>
+  private permissions: Required<Permissions>
 
   constructor(options: EditorOptions = {}) {
     this.decimals = options.decimals ?? 8
@@ -149,7 +195,8 @@ export class PolygonEditorCore {
     this.edgeEpsilon = 10 ** -this.decimals
     this.options = {
       overlap: options.overlap ?? 'clip',
-      overlapToleranceM2: options.overlapToleranceM2 ?? 0.01,
+      lockedOverlap: options.lockedOverlap ?? 'clip',
+      overlapToleranceM: options.overlapToleranceM ?? 0.01,
       router: options.router ?? null,
       maxDetour: options.maxDetour ?? 3,
       straightness: options.straightness ?? 4,
@@ -157,6 +204,7 @@ export class PolygonEditorCore {
       createProperties: options.createProperties ?? (() => ({})),
       readonly: options.readonly ?? false,
     }
+    this.permissions = permissionsWith(options.permissions)
   }
 
   // ── Events ──────────────────────────────────────────────────────────────
@@ -197,6 +245,7 @@ export class PolygonEditorCore {
       canUndo: this.history.canUndo,
       canRedo: this.history.canRedo,
       readonly: this.options.readonly,
+      canCreate: this.permissions.create,
     }
   }
 
@@ -236,6 +285,22 @@ export class PolygonEditorCore {
     this.notify()
   }
 
+  /** Replace the permissions. Losing `create` mid-drawing drops the drawing. */
+  setPermissions(permissions: Permissions): void {
+    this.permissions = permissionsWith(permissions)
+    if (!this.permissions.create && this.mode !== 'select') {
+      this.mode = 'select'
+      this.draft = []
+    }
+    this.notify()
+  }
+
+  /** Whether the area may be deleted or merged away. */
+  canDelete(id: string): boolean {
+    const area = this.getArea(id)
+    return area !== undefined && !area.locked && this.permissions.delete(area)
+  }
+
   setRouter(router: Router | null): void {
     this.options.router = router
     if (!this.canFollowRoads) this.followRoads = false
@@ -257,6 +322,21 @@ export class PolygonEditorCore {
     this.options.overlap = policy
   }
 
+  setLockedOverlapPolicy(policy: LockedOverlapPolicy): void {
+    this.options.lockedOverlap = policy
+  }
+
+  /** Under `lockedOverlap: 'forbid'`, the locked area in `others` that `rings` overlaps, if any. */
+  private lockedOverlapping(rings: readonly Ring[], others: readonly Area[]): Area | null {
+    if (this.options.lockedOverlap !== 'forbid') return null
+    return findOverlap(
+      rings,
+      others.filter((a) => a.locked),
+      this.epsilon,
+      this.options.overlapToleranceM,
+    )
+  }
+
   setSnapping(on: boolean): void {
     this.snapping = on
     this.notify()
@@ -274,6 +354,10 @@ export class PolygonEditorCore {
 
   setMode(mode: Mode): void {
     if (this.options.readonly && mode !== 'select') return
+    if (mode !== 'select' && !this.permissions.create) {
+      this.refuse({ code: 'not-allowed' })
+      return
+    }
     this.mode = mode
     this.cancelDraft()
     if (mode !== 'select') this.selectedVertex = null
@@ -604,6 +688,7 @@ export class PolygonEditorCore {
    */
   finish(closingVia?: Position[]): boolean {
     if (this.options.readonly || this.pending) return false
+    if (this.mode !== 'select' && !this.permissions.create) return this.refuse({ code: 'not-allowed' })
     let ok = false
     if (this.mode === 'draw') {
       const first = this.draft[0]
@@ -636,9 +721,11 @@ export class PolygonEditorCore {
 
     let rings: Ring[] = [ring]
     const others = this.areas
+    const lock = this.lockedOverlapping(rings, others)
+    if (lock) return this.refuse({ code: 'overlap-locked', otherId: lock.id })
     const policy = this.options.overlap
     if (policy !== 'allow') {
-      const overlapped = findOverlap(rings, others, this.epsilon, this.options.overlapToleranceM2)
+      const overlapped = findOverlap(rings, others, this.epsilon, this.options.overlapToleranceM)
       if (overlapped && policy === 'forbid') return this.refuse({ code: 'overlap', otherId: overlapped.id })
       if (overlapped) {
         const pieces = subtract(
@@ -655,7 +742,8 @@ export class PolygonEditorCore {
             ),
           )
           .filter(
-            (polygon) => polygon[0]!.length >= 3 && polygonArea(polygon) > this.options.overlapToleranceM2,
+            (polygon) =>
+              polygon[0]!.length >= 3 && polygonThickness(polygon) > this.options.overlapToleranceM,
           )
         if (pieces.length === 0) return this.refuse({ code: 'clipped-away' })
         pieces.sort((a, b) => polygonArea(b) - polygonArea(a))
@@ -869,6 +957,7 @@ export class PolygonEditorCore {
 
   deleteArea(id: string): boolean {
     if (!this.editable(id)) return false
+    if (!this.permissions.delete(this.getArea(id)!)) return this.refuse({ code: 'not-allowed', areaId: id })
     this.commit(this.areas.filter((a) => a.id !== id))
     if (this.selectedId === id) {
       this.selectedId = null
@@ -883,6 +972,7 @@ export class PolygonEditorCore {
     if (id === otherId || !this.editable(id) || !this.editable(otherId)) return false
     const a = this.getArea(id)!
     const b = this.getArea(otherId)!
+    if (!this.permissions.delete(b)) return this.refuse({ code: 'not-allowed', areaId: otherId })
     const merged = unite(a.rings, b.rings, this.epsilon)
     if (merged.length !== 1) return this.refuse({ code: 'not-adjacent', areaId: id, otherId })
     const rings = merged[0]!.map((r) =>
@@ -913,9 +1003,17 @@ export class PolygonEditorCore {
     return true
   }
 
-  /** Add areas (an import). Coordinates are rounded; invalid polygons are skipped and reported. */
+  /**
+   * Add areas (an import). Coordinates are rounded; invalid polygons, and
+   * under `lockedOverlap: 'forbid'` areas overlapping a locked one, are
+   * skipped and reported.
+   */
   addAreas(areas: Area[], options: { replace?: boolean } = {}): number {
     if (this.options.readonly) return 0
+    if (!this.permissions.create) {
+      this.refuse({ code: 'not-allowed' })
+      return 0
+    }
     const taken = new Set(options.replace ? [] : this.areas.map((a) => a.id))
     const accepted: Area[] = []
     let skipped = 0
@@ -935,17 +1033,21 @@ export class PolygonEditorCore {
       accepted.push({ ...area, id, rings })
     }
     if (skipped > 0) this.emit('issue', { code: 'import-skipped', count: skipped })
-    if (accepted.length === 0) return 0
     const base = options.replace ? [] : this.areas
+    const locked = [...base, ...accepted].filter((a) => a.locked)
+    const kept = accepted.filter((a) => a.locked || !this.lockedOverlapping(a.rings, locked))
+    if (kept.length < accepted.length)
+      this.emit('issue', { code: 'overlap-locked', count: accepted.length - kept.length })
+    if (kept.length === 0) return 0
     this.commit(
       nodeAreas(
-        [...base, ...accepted],
-        accepted.map((a) => a.id),
+        [...base, ...kept],
+        kept.map((a) => a.id),
         this.edgeEpsilon,
       ),
     )
     this.notify()
-    return accepted.length
+    return kept.length
   }
 
   // ── History ─────────────────────────────────────────────────────────────
@@ -984,8 +1086,9 @@ export class PolygonEditorCore {
   }
 
   /**
-   * Commit `next` if every area that changed is still valid and, unless
-   * overlaps are allowed, overlaps nothing. Otherwise keep the current state
+   * Commit `next` if every area that changed is still valid, overlaps no
+   * locked area when `lockedOverlap` forbids it and, unless overlaps are
+   * allowed, overlaps nothing. Otherwise keep the current state
    * and report why.
    */
   private tryCommit(next: Area[], alsoCheck: string[] = []): boolean {
@@ -998,10 +1101,21 @@ export class PolygonEditorCore {
         return this.refuse({ code: problems[0]!, areaId: area.id })
       }
     }
+    for (const area of changed) {
+      if (area.locked) continue
+      const lock = this.lockedOverlapping(
+        area.rings,
+        next.filter((a) => a.id !== area.id),
+      )
+      if (lock) {
+        this.notify()
+        return this.refuse({ code: 'overlap-locked', areaId: area.id, otherId: lock.id })
+      }
+    }
     if (this.options.overlap !== 'allow') {
       for (const area of changed) {
         const others = next.filter((a) => a.id !== area.id)
-        const hit = findOverlap(area.rings, others, this.epsilon, this.options.overlapToleranceM2)
+        const hit = findOverlap(area.rings, others, this.epsilon, this.options.overlapToleranceM)
         if (hit) {
           this.notify()
           return this.refuse({ code: 'overlap', areaId: area.id, otherId: hit.id })

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { area, free, square } from '../test-support/fixtures'
 import { PolygonEditorCore, type EditorOptions } from './editor'
 import { polygonArea } from './geo'
-import { polygonIssues } from './validate'
+import { findOverlap, overlaps, polygonIssues } from './validate'
 import { linkedVertices } from './topology'
 import type { SnapResult } from './snap'
 import type { Area, Issue, Position } from './types'
@@ -531,6 +531,161 @@ describe('borders shared with a locked area', () => {
   })
 })
 
+describe('overlapping a locked area', () => {
+  const locked = (): Area => ({ ...area('locked', square(0, 0, 0.01)), locked: true })
+
+  it('trims a drawing against a locked area by default, like any other', async () => {
+    const { editor, issues } = makeEditor()
+    editor.setAreas([locked()])
+    await drawRing(editor, square(0.006, 0, 0.01))
+    expect(issues.map((i) => i.code)).toEqual(['clipped'])
+    expect(editor.getState().areas).toHaveLength(2)
+  })
+
+  it('refuses a drawing over a locked area under forbid, and keeps the drawing', async () => {
+    const { editor, issues, changes } = makeEditor({ lockedOverlap: 'forbid' })
+    editor.setAreas([locked()])
+    await drawRing(editor, square(0.006, 0, 0.01))
+    expect(issues).toEqual([{ code: 'overlap-locked', otherId: 'locked' }])
+    expect(editor.getState().areas).toHaveLength(1)
+    expect(editor.getState().draft).toHaveLength(4)
+    expect(changes).toHaveLength(0)
+  })
+
+  it('still trims a drawing against an unlocked neighbour under forbid', async () => {
+    const { editor, issues } = makeEditor({ lockedOverlap: 'forbid' })
+    editor.setAreas([locked(), area('mine', square(0.02, 0, 0.01))])
+    await drawRing(editor, square(0.026, 0, 0.01))
+    expect(issues.map((i) => i.code)).toEqual(['clipped'])
+    const drawn = editor.getArea('new-1')!
+    expect(polygonArea(drawn.rings) / polygonArea(editor.getArea('mine')!.rings)).toBeCloseTo(0.6, 3)
+  })
+
+  it('refuses a drawing that covers both an unlocked neighbour and a locked area', async () => {
+    const { editor, issues } = makeEditor({ lockedOverlap: 'forbid' })
+    editor.setAreas([locked(), area('mine', square(0.01, 0, 0.01))])
+    await drawRing(editor, [
+      [0.005, 0.005],
+      [0.03, 0.005],
+      [0.03, 0.02],
+      [0.005, 0.02],
+    ])
+    expect(issues.map((i) => i.code)).toEqual(['overlap-locked'])
+    expect(editor.getState().areas).toHaveLength(2)
+  })
+
+  it('accepts a drawing that only touches a locked area along a shared border', async () => {
+    const { editor, issues } = makeEditor({ lockedOverlap: 'forbid' })
+    editor.setAreas([locked()])
+    await drawRing(editor, square(0.01, 0, 0.01))
+    expect(issues).toEqual([])
+    expect(editor.getState().areas).toHaveLength(2)
+  })
+
+  it('refuses an edit that pushes into a locked area under forbid, even when overlaps are allowed', () => {
+    const { editor, issues } = makeEditor({ lockedOverlap: 'forbid', overlap: 'allow' })
+    editor.setAreas([locked(), area('mine', square(0.012, 0, 0.01))])
+    expect(editor.setVertex({ areaId: 'mine', ring: 0, index: 0 }, [0.005, 0])).toBe(false)
+    expect(issues).toEqual([{ code: 'overlap-locked', areaId: 'mine', otherId: 'locked' }])
+  })
+
+  it('lets overlaps with unlocked areas follow the overlap policy under forbid', () => {
+    const { editor } = makeEditor({ lockedOverlap: 'forbid', overlap: 'allow' })
+    editor.setAreas([locked(), area('a', square(0.02, 0, 0.01)), area('b', square(0.032, 0, 0.01))])
+    expect(editor.setVertex({ areaId: 'b', ring: 0, index: 0 }, [0.025, 0])).toBe(true)
+  })
+
+  it('skips imported areas that overlap a locked area under forbid', () => {
+    const { editor, issues } = makeEditor({ lockedOverlap: 'forbid' })
+    editor.setAreas([locked()])
+    expect(
+      editor.addAreas([area('over', square(0.005, 0, 0.01)), area('beside', square(0.01, 0, 0.01))]),
+    ).toBe(1)
+    expect(issues).toEqual([{ code: 'overlap-locked', count: 1 }])
+    expect(editor.getState().areas.map((a) => a.id)).toEqual(['locked', 'beside'])
+  })
+
+  it('switches policy at runtime', async () => {
+    const { editor, issues } = makeEditor({ lockedOverlap: 'forbid' })
+    editor.setAreas([locked()])
+    editor.setLockedOverlapPolicy('clip')
+    await drawRing(editor, square(0.006, 0, 0.01))
+    expect(issues.map((i) => i.code)).toEqual(['clipped'])
+  })
+})
+
+describe('a new border clipped onto a locked one', () => {
+  // Corners clipped onto the interior of a locked area's edges are rounded to
+  // 8 decimals, and the locked area keeps its straight edge: a sliver of the
+  // new area, ~1 mm wide and a fraction of a square metre, sits inside it.
+  const locked = (): Area => ({
+    ...area('locked', [
+      [-100.43, 20.55],
+      [-100.3712345, 20.5633333],
+      [-100.3687777, 20.6199999],
+      [-100.4311111, 20.6101111],
+    ]),
+    locked: true,
+  })
+  const drawing: Position[] = [
+    [-100.4, 20.52],
+    [-100.33, 20.53],
+    [-100.32, 20.6],
+    [-100.39, 20.58],
+  ]
+
+  it('is not an overlap once clipped, so the new area stays editable under forbid', async () => {
+    const { editor, issues } = makeEditor()
+    editor.setAreas([locked()])
+    await drawRing(editor, drawing)
+    expect(issues.map((i) => i.code)).toEqual(['clipped'])
+    const drawn = editor.getArea('new-1')!
+    expect(polygonArea(drawn.rings)).toBeGreaterThan(1_000_000)
+    expect(overlaps(drawn.rings, locked().rings)).toBe(false)
+    expect(findOverlap(drawn.rings, [locked()], editor.epsilon, 0.01)).toBeNull()
+
+    editor.setLockedOverlapPolicy('forbid')
+    const far = drawn.rings[0]!.findIndex((p) => p[0] === -100.33 && p[1] === 20.53)
+    expect(editor.setVertex({ areaId: 'new-1', ring: 0, index: far }, [-100.331, 20.531])).toBe(true)
+    expect(issues.map((i) => i.code)).toEqual(['clipped'])
+  })
+
+  it('accepts drawing the clipped border again under forbid', async () => {
+    const first = makeEditor()
+    first.editor.setAreas([locked()])
+    await drawRing(first.editor, drawing)
+    const clipped = first.editor.getArea('new-1')!.rings[0]!
+
+    const { editor, issues } = makeEditor({ lockedOverlap: 'forbid' })
+    editor.setAreas([locked()])
+    await drawRing(editor, clipped)
+    expect(issues).toEqual([])
+    expect(editor.getState().areas).toHaveLength(2)
+  })
+
+  it('imports an area whose long border runs a rounding step inside a locked one under forbid', () => {
+    // 55 km of border, 1e-8° (~1.1 mm) inside: ~62 m² of shared ground, but 1 mm thick.
+    const { editor, issues } = makeEditor({ lockedOverlap: 'forbid' })
+    editor.setAreas([{ ...area('wide', square(0, 0, 0.5)), locked: true }])
+    const beside = area('beside', [
+      [0.5 - 1e-8, 0],
+      [1, 0],
+      [1, 0.5],
+      [0.5 - 1e-8, 0.5],
+    ])
+    expect(editor.addAreas([beside])).toBe(1)
+    expect(issues).toEqual([])
+  })
+
+  it('still refuses the original drawing under forbid: it crosses metres into the locked area', async () => {
+    const { editor, issues } = makeEditor({ lockedOverlap: 'forbid' })
+    editor.setAreas([locked()])
+    await drawRing(editor, drawing)
+    expect(issues).toEqual([{ code: 'overlap-locked', otherId: 'locked' }])
+    expect(editor.getState().areas).toHaveLength(1)
+  })
+})
+
 describe('following streets (no router: the network the map draws)', () => {
   // Streets every 0.001° (~111 m), each drawn as one long line, as a map would.
   const S = 0.001
@@ -687,5 +842,48 @@ describe('following streets (no router: the network the map draws)', () => {
     expect(editor.finish()).toBe(true)
     const ring = editor.getState().areas[0]!.rings[0]!
     for (const p of ring) expect(isOnGrid(p)).toBe(true)
+  })
+})
+
+describe('permissions', () => {
+  const pair = () => [area('a', square(0, 0, 0.01)), area('b', square(0.01, 0, 0.01))]
+
+  it('refuses drawing, cutting and importing without create, and says so', async () => {
+    const { editor, issues, changes } = makeEditor({ permissions: { create: false } })
+    editor.setAreas(pair())
+    editor.setMode('draw')
+    editor.setMode('cut')
+    expect(editor.getState().mode).toBe('select')
+    expect(editor.getState().canCreate).toBe(false)
+    expect(editor.addAreas([area('c', square(1, 1, 0.01))])).toBe(0)
+    expect(issues.map((i) => i.code)).toEqual(['not-allowed', 'not-allowed', 'not-allowed'])
+    expect(changes).toHaveLength(0)
+  })
+
+  it('still lets a corner be moved and an area be renamed without create', () => {
+    const { editor } = makeEditor({ permissions: { create: false } })
+    editor.setAreas(pair())
+    expect(editor.setVertex({ areaId: 'a', ring: 0, index: 0 }, [-0.001, -0.001])).toBe(true)
+    expect(editor.updateProperties('a', { name: 'Norte' })).toBe(true)
+  })
+
+  it('refuses deleting, or merging away, an area the host keeps', () => {
+    const { editor, issues } = makeEditor({ permissions: { delete: (a) => a.id !== 'b' } })
+    editor.setAreas(pair())
+    expect(editor.canDelete('a')).toBe(true)
+    expect(editor.canDelete('b')).toBe(false)
+    expect(editor.deleteArea('b')).toBe(false)
+    expect(editor.mergeAreas('a', 'b')).toBe(false)
+    expect(issues.map((i) => i.code)).toEqual(['not-allowed', 'not-allowed'])
+    expect(editor.mergeAreas('b', 'a')).toBe(true)
+    expect(editor.getState().areas.map((a) => a.id)).toEqual(['b'])
+  })
+
+  it('drops a drawing in progress when create is taken away', async () => {
+    const { editor } = makeEditor()
+    editor.setMode('draw')
+    await editor.addPoint(free([0, 0]))
+    editor.setPermissions({ create: false })
+    expect(editor.getState()).toMatchObject({ mode: 'select', draft: [], canCreate: false })
   })
 })

@@ -4,7 +4,7 @@
 // window's — below `narrowWidth` the panel moves under the map.
 import { onBeforeUnmount, onMounted, ref, toRef } from 'vue'
 import type { Map as MapLibreMap, MapOptions, StyleSpecification } from 'maplibre-gl'
-import type { OverlapPolicy } from '../core/editor'
+import type { LockedOverlapPolicy, OverlapPolicy } from '../core/editor'
 import type { Router } from '../core/trace'
 import type { Area, Position } from '../core/types'
 import type { Geocoder } from '../adapters/geocoding'
@@ -25,12 +25,15 @@ const props = withDefaults(
     mapOptions?: Partial<MapOptions>
     readonly?: boolean
     overlap?: OverlapPolicy
+    lockedOverlap?: LockedOverlapPolicy
     decimals?: number
     geocoder?: Geocoder | null
     router?: Router | null
     snapLayers?: MapBindingOptions['snapLayers']
     locale?: string
     messages?: Messages
+    /** Which areas the side panel lists; the others stay on the map. Default: every area. */
+    listed?: (area: Area) => boolean
     /** Show import/export buttons. */
     files?: boolean
     /** Container width (px) below which the panel moves under the map. */
@@ -42,12 +45,14 @@ const props = withDefaults(
     mapOptions: undefined,
     readonly: false,
     overlap: 'clip',
+    lockedOverlap: 'clip',
     decimals: undefined,
     geocoder: null,
     router: null,
     snapLayers: undefined,
     locale: undefined,
     messages: undefined,
+    listed: undefined,
     files: true,
     narrowWidth: 720,
   },
@@ -61,12 +66,14 @@ const editor = usePolygonEditor({
   onUpdate: (next) => (areas.value = next),
   readonly: toRef(props, 'readonly'),
   overlap: toRef(props, 'overlap'),
+  lockedOverlap: toRef(props, 'lockedOverlap'),
   decimals: props.decimals,
   geocoder: toRef(props, 'geocoder'),
   router: toRef(props, 'router'),
   snapLayers: props.snapLayers,
   locale: toRef(props, 'locale'),
   messages: toRef(props, 'messages'),
+  listed: (area) => props.listed?.(area) ?? true,
 })
 
 const root = ref<HTMLElement>()

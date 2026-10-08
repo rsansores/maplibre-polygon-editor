@@ -13,11 +13,14 @@ const { t } = editor
 const state = editor.state
 const fileInput = ref<HTMLInputElement>()
 
-const modes: { mode: Mode; icon: IconName; label: string; tip: string }[] = [
+const allModes: { mode: Mode; icon: IconName; label: string; tip: string }[] = [
   { mode: 'select', icon: 'select', label: 'modeSelect', tip: 'modeSelectTip' },
   { mode: 'draw', icon: 'draw', label: 'modeDraw', tip: 'modeDrawTip' },
   { mode: 'cut', icon: 'cut', label: 'modeCut', tip: 'modeCutTip' },
 ]
+
+// Drawing and cutting both make a new area.
+const modes = computed(() => allModes.filter((m) => m.mode === 'select' || state.value.canCreate))
 
 const drafting = computed(() => state.value.draft.length > 0)
 
@@ -132,7 +135,7 @@ async function onFile(event: Event) {
       </button>
       <template v-if="files">
         <button
-          v-if="!state.readonly"
+          v-if="!state.readonly && state.canCreate"
           type="button"
           class="pe-btn pe-btn--icon"
           :title="t('importTip')"

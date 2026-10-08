@@ -1,5 +1,5 @@
 import * as polyclip from 'polyclip-ts'
-import { dedupeRing, polygonArea } from './geo'
+import { dedupeRing, polygonThickness } from './geo'
 import type { Position, Ring } from './types'
 
 /**
@@ -44,7 +44,12 @@ export function unite(a: readonly Ring[], b: readonly Ring[], epsilon: number): 
   return opened(polyclip.union(closed(a), closed(b)), epsilon)
 }
 
-/** Square metres covered by both polygons. Touching along a border is 0. */
-export function overlapArea(a: readonly Ring[], b: readonly Ring[], epsilon: number): number {
-  return intersect(a, b, epsilon).reduce((sum, polygon) => sum + polygonArea(polygon), 0)
+/**
+ * The thickness (see `polygonThickness`) of the thickest connected piece of
+ * ground both polygons cover, in metres. Touching along a border is 0, and so
+ * is any hair-thin sliver rounding leaves between two borders that should
+ * coincide: its thickness is its width, however long the border.
+ */
+export function overlapThickness(a: readonly Ring[], b: readonly Ring[], epsilon: number): number {
+  return intersect(a, b, epsilon).reduce((max, polygon) => Math.max(max, polygonThickness(polygon)), 0)
 }

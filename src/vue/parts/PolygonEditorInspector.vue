@@ -14,7 +14,10 @@ const area = editor.selectedArea
 const vertex = editor.selectedVertex
 const readonly = computed(() => editor.state.value.readonly || area.value?.locked === true)
 const metrics = computed(() => (area.value ? editor.metrics(area.value) : null))
-const neighbours = computed(() => (area.value && !readonly.value ? editor.neighbours(area.value.id) : []))
+// A merge keeps this area and deletes the other one.
+const neighbours = computed(() =>
+  area.value && !readonly.value ? editor.neighbours(area.value.id).filter((n) => editor.canDelete(n)) : [],
+)
 
 const name = ref('')
 watch(
@@ -127,7 +130,12 @@ const shared = computed(() => {
             <option value="" disabled>{{ t('mergeWith') }}</option>
             <option v-for="n in neighbours" :key="n.id" :value="n.id">{{ editor.nameOf(n) }}</option>
           </select>
-          <button type="button" class="pe-btn pe-btn--danger" @click="editor.deleteArea(area.id)">
+          <button
+            v-if="editor.canDelete(area)"
+            type="button"
+            class="pe-btn pe-btn--danger"
+            @click="editor.deleteArea(area.id)"
+          >
             <PeIcon name="trash" />
             {{ t('deleteArea') }}
           </button>

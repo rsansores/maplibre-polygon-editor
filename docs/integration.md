@@ -79,10 +79,12 @@ width, not the window's) the side panel moves under the map.
 | `geocoder`       | `Geocoder \| null`              | `null`                              | Place search. Pasted coordinates work without one.                                          |
 | `router`         | `Router \| null`                | `null`                              | Replaces the built-in street following with your own service.                               |
 | `overlap`        | `'clip' \| 'forbid' \| 'allow'` | `'clip'`                            | What a new drawing over an existing area does.                                              |
+| `lockedOverlap`  | `'clip' \| 'forbid'`            | `'clip'`                            | Overlaps with a locked area follow `overlap`, or are refused (`forbid`).                    |
 | `decimals`       | `number`                        | `8`                                 | Coordinate precision (8 ≈ 1.1 mm). Fixed at creation.                                       |
 | `readonly`       | `boolean`                       | `false`                             | Show and select only.                                                                       |
 | `locale`         | `string`                        | host's `vue-i18n` locale, else `en` | UI language.                                                                                |
 | `messages`       | `Messages`                      | —                                   | Override or add strings.                                                                    |
+| `listed`         | `(area: Area) => boolean`       | every area                          | Which areas the side panel lists; the others stay on the map.                               |
 | `files`          | `boolean`                       | `true`                              | Show the import/export buttons.                                                             |
 | `narrowWidth`    | `number`                        | `720`                               | Width below which the panel goes under the map.                                             |
 
@@ -133,7 +135,7 @@ const editor = usePolygonEditor({
 | `PolygonEditorMap`       | Creates a MapLibre map, attaches the editor, draws the overlays. Props: `mapStyle`, `center`, `zoom`, `fitAreas` (default `true`), `mapOptions`, `controls`. |
 | `PolygonEditorOverlays`  | The hint, the measurement readout and the message toast, positioned over a map. Included in `PolygonEditorMap`; place it yourself over a map you own.        |
 | `PolygonEditorToolbar`   | Modes, undo/redo, the snapping/tracing/routing toggles, fit, import/export.                                                                                  |
-| `PolygonEditorAreaList`  | Every area with its colour and size; click selects, double-click zooms.                                                                                      |
+| `PolygonEditorAreaList`  | Every area with its colour and size (only those `listed` accepts); click selects, double-click zooms.                                                        |
 | `PolygonEditorInspector` | The selected area (name, size, perimeter, merge, delete) and the selected corner (exact coordinates).                                                        |
 | `PolygonEditorSearch`    | Place search and coordinate parsing; while drawing, a result can be added as a corner.                                                                       |
 
@@ -151,7 +153,7 @@ form needs is on it:
 | `setSnapping(on)`, `setTracing(on)`, `setFollowRoads(on)`                                  | Helper toggles.                                                                                                                                                         |
 | `select(id)`, `rename(id, name)`, `deleteArea(id)`, `merge(id, otherId)`, `neighbours(id)` | Whole areas.                                                                                                                                                            |
 | `setVertexPosition(position)`, `deleteVertex()`, `addPoint(position)`                      | Exact edits. `addPoint` adds a corner to the current drawing.                                                                                                           |
-| `metrics(area)`, `nameOf(area)`                                                            | Area (m²), perimeter (m), corner count; display name.                                                                                                                   |
+| `metrics(area)`, `nameOf(area)`, `listed(area)`                                            | Area (m²), perimeter (m), corner count; display name; whether the area list shows it.                                                                                   |
 | `goTo(position, bbox?)`, `clearPin()`, `fitAll()`, `fitArea(id)`                           | Camera.                                                                                                                                                                 |
 | `importFile(file)`, `exportGeoJSON(filename?)`, `toGeoJSON()`                              | Files.                                                                                                                                                                  |
 | `attach(map, options?)`, `detach()`, `binding`                                             | Connect your own map (next section).                                                                                                                                    |
@@ -352,12 +354,66 @@ against for overlaps, but never edited — for example the areas of a neighbouri
 current user may see but not change. A new drawing over a locked area is trimmed against it like
 any other, so the new border matches the locked one exactly.
 
+When ground under a locked area is not the user's to take at all — another owner's areas, shown for
+context — set `lockedOverlap: 'forbid'`. A drawing, an edit or an import that would cover any part
+of a locked area (a piece thicker than `overlapToleranceM`, see
+[Storing areas on a server](#storing-areas-on-a-server)) is then refused with `overlap-locked` instead of
+trimmed; the drawing stays on screen to be fixed, and imported areas that overlap are skipped.
+Touching a locked area along a shared border is not an overlap. Overlaps with unlocked areas keep
+following `overlap`, so a drawing over the user's own neighbours is still trimmed to share their
+border:
+
+```ts
+usePolygonEditor({
+  modelValue: areas, // the user's areas, plus another owner's with `locked: true`
+  overlap: 'clip', // own neighbours: trim, share the border
+  lockedOverlap: 'forbid', // locked areas: refuse
+})
+```
+
+The refusal holds under every `overlap` policy, `allow` included. In the core: the `lockedOverlap`
+option and `setLockedOverlapPolicy()`.
+
+Areas shown only for context need not crowd the area list either. `listed` decides which areas
+`PolygonEditorAreaList` shows; the rest stay on the map, selectable there. Reactive data the
+function reads is tracked:
+
+```ts
+usePolygonEditor({
+  modelValue: areas,
+  lockedOverlap: 'forbid',
+  listed: (area) => !area.locked, // list the user's areas only
+})
+```
+
+A swatch keeps the colour the map gives the area, whatever is left out.
+
 Corners and borders an editable area shares with a locked one are **pinned**: they cannot be
 dragged, typed, deleted or split, because the locked side could not follow and the shared border
 would tear. The editor says so (`pinned`) the moment the user tries; the area's other corners stay
 fully editable.
 
 `readonly` turns the whole editor into a viewer: selection, measurements and export still work.
+
+**Permissions.** Between editing everything and editing nothing, a host can withhold the two acts
+that change _which_ areas exist, for users who may reshape the areas they have but not add or
+remove any:
+
+```ts
+usePolygonEditor({
+  modelValue: areas,
+  permissions: () => ({
+    create: user.mayCreate, // draw, cut (a cut makes a new area) and import
+    delete: (area) => area.properties.mine === true, // delete, or merge away
+  }),
+})
+```
+
+Both default to allowed. A withheld act is refused with `not-allowed`, and the parts do not offer
+it: the toolbar drops _Draw_, _Cut_ and _Import_, the inspector drops _Delete_ and lists only the
+neighbours that may be merged away (a merge keeps the selected area and deletes the other). Losing
+`create` in the middle of a drawing drops the drawing. In the core: `permissions` in the options,
+`setPermissions()`, `canDelete(id)`, and `canCreate` in the state.
 
 ## Theming
 
@@ -422,6 +478,7 @@ messages cover all of them.
 | `too-few-vertices`    | A ring would have fewer than three corners or enclose nothing.                 |
 | `self-intersection`   | A border would cross or touch itself.                                          |
 | `overlap`             | An edit would make two areas overlap (policy `clip` or `forbid`).              |
+| `overlap-locked`      | A drawing, edit or import over a locked area (`lockedOverlap: 'forbid'`).      |
 | `clipped`             | A new drawing was trimmed to the free ground. Informational.                   |
 | `clipped-split`       | The free ground was in several pieces; the largest was kept.                   |
 | `clipped-away`        | The drawing lies entirely inside existing areas.                               |
@@ -430,6 +487,7 @@ messages cover all of them.
 | `cut-crosses-hole`    | A cut line passes through a hole.                                              |
 | `not-adjacent`        | A merge between areas that share no border.                                    |
 | `locked`              | An edit on a locked area.                                                      |
+| `not-allowed`         | A draw, cut, import, delete or merge the host's `permissions` withhold.        |
 | `pinned`              | A move, deletion or insertion on a corner or border shared with a locked area. |
 | `route-fallback`      | "Follow roads" found no street path near the line; the segment is straight.    |
 | `import-skipped`      | Shapes in an import that are not valid polygons (`count` says how many).       |
@@ -452,19 +510,38 @@ OGC simple-polygon rules plus "no overlap", so the server checks are:
 -- Valid shape (the same rules the editor enforces).
 SELECT ST_IsValid(geom) FROM ...;
 
--- No overlap with another area of the same set. Touching along a border is
--- allowed; covering shared ground is not. A tolerance absorbs floating-point noise.
+-- No overlap with another area of the same set: no connected piece of the
+-- shared ground is thicker than 1 cm (thickness = 2 · area / perimeter, metres).
 SELECT other.id
 FROM areas other
 WHERE other.set_id = $set AND other.id <> $id
   AND ST_Intersects(other.geom, $geom)
-  AND ST_Area(ST_Intersection(other.geom, $geom)::geography) > 0.01;  -- m²
+  AND EXISTS (
+    SELECT 1
+    FROM ST_Dump(ST_Intersection(other.geom, $geom)) d
+    WHERE ST_Dimension(d.geom) = 2
+      AND 2 * ST_Area(d.geom::geography) / NULLIF(ST_Perimeter(d.geom::geography), 0) > 0.01
+  );
 ```
 
-Because shared borders hold _identical_ vertices, two neighbours relate as `ST_Touches` — never
-`ST_Overlaps` — and the area of their intersection is exactly zero. If your server sees slivers,
-something between the editor and the database changed the coordinates (a float column with less
-precision, a reprojection, a simplification). Keep at least as many decimals as `decimals`.
+**Measure overlap by thickness, not area.** Two areas overlap when some connected piece of their
+intersection is thicker than `overlapToleranceM` (default `0.01`, 1 cm), a piece's thickness being
+`2 · area / perimeter` in metres, with the perimeter counting every ring. For a thin strip that is
+its width; a real overlap of 1 m × 1 m is 0.5 m thick. An area tolerance cannot tell the two apart:
+where the editor clips a new border onto the interior of a neighbour's edge, the new corners are
+rounded to `decimals` (8 → ~1.1 mm), and a neighbour that does not take those corners — a locked
+one — keeps its straight edge. The two borders then disagree by up to a rounding step, leaving a
+sliver whose _area_ grows with the length of the border (a fraction of a square metre on a few
+kilometres) while its _thickness_ stays around a millimetre. Use the same rule on the server as
+the editor does, or the server will call two areas that merely share a border overlapping.
+`overlaps(a, b, { epsilon, toleranceM })` from `maplibre-polygon-editor/core` is the editor's own
+predicate, and `overlapThickness(a, b, epsilon)` the number it compares.
+
+Where both neighbours hold the corners, shared borders hold _identical_ vertices, the two relate as
+`ST_Touches` — never `ST_Overlaps` — and their intersection has no area at all. If your server sees
+slivers thicker than the tolerance, something between the editor and the database changed the
+coordinates (a float column with less precision, a reprojection, a simplification). Keep at least
+as many decimals as `decimals`.
 
 **Decide what a point on a border belongs to.** With exactly shared borders, a point _on_ the
 border (an address geocoded to the street centreline, say) is covered by both neighbours:
