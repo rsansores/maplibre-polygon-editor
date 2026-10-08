@@ -4,10 +4,9 @@ One artifact ships from this repo: the npm package **`maplibre-polygon-editor`**
 component, the framework-agnostic core and the stylesheet).
 
 Publishing is automated by [`.github/workflows/release.yml`](.github/workflows/release.yml), which
-uses **npm Trusted Publishing (OIDC)** with **staged publishing** — no npm token is stored in this
-repo. The job runs in a protected environment and **waits for your approval**, then _stages_ the
-version on npm; nobody can install it until you approve it there with 2FA. Third-party actions are pinned to
-commit SHAs; Dependabot proposes updates.
+uses **npm Trusted Publishing (OIDC)** — no npm token is stored in this repo. The publish job runs
+in a protected environment and **waits for your approval**; that approval on GitHub is the only one.
+Third-party actions are pinned to commit SHAs; Dependabot proposes updates.
 
 ---
 
@@ -43,14 +42,15 @@ npm → the package → **Settings → Publishing access → Trusted Publisher �
 - Repository: `maplibre-polygon-editor`
 - Workflow filename: `release.yml`
 - Environment: `release`
-- Permission: **staged publish only** (npm's recommendation). Plain `npm publish` from CI is refused
-  with `403 OIDC permission denied for this action`.
+- Permission: **publish**. With staged publishing only (npm's default suggestion) the workflow's
+  `npm publish` is refused with `403 OIDC permission denied for this action`. The GitHub approval
+  gate below is the human check instead of a second, 2FA approval on npm.
 
 Or from the CLI (npm ≥ 11.15, 2FA):
 
 ```bash
 npm trust github maplibre-polygon-editor --file release.yml \
-  --repository rsansores/maplibre-polygon-editor --environment release --allow-stage-publish
+  --repository rsansores/maplibre-polygon-editor --environment release --allow-publish
 ```
 
 ### 4. The protected `release` environment (the approval gate)
@@ -69,24 +69,14 @@ check that the reviewer is set.)
    Tick **dry run** first if you want to see the tarball without publishing.
 3. The `verify` job re-runs the full CI (format, lint, types, knip, unit and browser tests).
 4. The `release` job asks for approval. **Approve** it.
-5. CI sets the version, builds, stages it on npm with provenance, then commits `release: vX.Y.Z`,
+5. CI sets the version, builds, publishes to npm with provenance, then commits `release: vX.Y.Z`,
    tags it and pushes both.
-6. Publish the staged version, with 2FA:
-
-   ```bash
-   npm stage list maplibre-polygon-editor    # the staged version and its id
-   npm stage approve <stage-id>              # now it is public
-   ```
-
-   `npm stage download <stage-id>` fetches the tarball first if you want to look inside. A version
-   you reject (`npm stage reject <stage-id>`) is already tagged in git; release the fix as the next
-   version.
 
 ## Notes
 
 - **Versions are immutable.** npm un-publish is restricted after 72 h. Pick the version
   deliberately; while the API settles, stay on `0.x`.
-- **git is updated last.** The version bump is committed only after npm staged the package, so a
+- **git is updated last.** The version bump is committed only after npm accepted the package, so a
   failed run leaves the repo clean and can simply be retried.
 - **The bump commit is pushed to `main`.** If you protect `main` with required pull requests, allow
   GitHub Actions to bypass, or the push fails.
