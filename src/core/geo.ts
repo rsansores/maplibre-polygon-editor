@@ -189,7 +189,7 @@ export function pointInPolygon(p: Position, rings: readonly Ring[]): boolean {
 }
 
 /** `[minLng, minLat, maxLng, maxLat]` of every vertex given. */
-export function bounds(points: Iterable<Position>): [number, number, number, number] | null {
+export function bounds(points: Iterable<Position>): Box | null {
   let minX = Infinity
   let minY = Infinity
   let maxX = -Infinity
@@ -201,6 +201,44 @@ export function bounds(points: Iterable<Position>): [number, number, number, num
     if (y > maxY) maxY = y
   }
   return minX === Infinity ? null : [minX, minY, maxX, maxY]
+}
+
+/** `[minLng, minLat, maxLng, maxLat]`. */
+export type Box = [number, number, number, number]
+
+const polygonBoxes = new WeakMap<readonly Ring[], Box | null>()
+
+/**
+ * The bounds of a polygon, remembered per `rings` array. Nothing in the
+ * editor mutates a ring — every edit makes new arrays — so a remembered box
+ * is never stale, and the spatial checks that skip far-away areas cost one
+ * pass over each area's vertices for as long as it stays unchanged.
+ */
+export function polygonBounds(rings: readonly Ring[]): Box | null {
+  let box = polygonBoxes.get(rings)
+  if (box === undefined) {
+    box = bounds(rings.flat())
+    polygonBoxes.set(rings, box)
+  }
+  return box
+}
+
+/** Do two boxes meet, or come within `margin` degrees of each other? */
+export function boxesTouch(a: Box, b: Box, margin = 0): boolean {
+  return a[0] <= b[2] + margin && b[0] <= a[2] + margin && a[1] <= b[3] + margin && b[1] <= a[3] + margin
+}
+
+/** Is `p` inside `box`, or within `margin` degrees of it? */
+export function boxHolds(box: Box, p: Position, margin = 0): boolean {
+  return (
+    p[0] >= box[0] - margin && p[0] <= box[2] + margin && p[1] >= box[1] - margin && p[1] <= box[3] + margin
+  )
+}
+
+/** Could the polygon hold `p` as a vertex or on an edge, within `margin`? A cheap test that never misses. */
+export function mayHold(rings: readonly Ring[], p: Position, margin: number): boolean {
+  const box = polygonBounds(rings)
+  return box !== null && boxHolds(box, p, margin)
 }
 
 /** Drop consecutive duplicates (and a last vertex equal to the first) from an open ring. */

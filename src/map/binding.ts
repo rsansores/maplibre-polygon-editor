@@ -7,9 +7,9 @@ import type {
   MapTouchEvent,
 } from 'maplibre-gl'
 import type { EditorState, PolygonEditorCore } from '../core/editor'
-import { distance, samePosition } from '../core/geo'
+import { boxesTouch, distance, polygonBounds, samePosition, type Box } from '../core/geo'
 import { snap, type SnapResult } from '../core/snap'
-import type { EdgeRef, Position, VertexRef } from '../core/types'
+import type { Area, EdgeRef, Position, VertexRef } from '../core/types'
 import { DEFAULT_THEME, readTheme, type MapTheme } from './theme'
 
 export type { MapTheme } from './theme'
@@ -64,6 +64,17 @@ export class MapBinding {
   private readonly cleanups: (() => void)[] = []
   private hover: 'vertex' | 'midpoint' | 'area' | null = null
   private inputBound = false
+  /**
+   * What each source last received, so a frame re-sends only what changed.
+   * `setData` makes MapLibre re-tile the whole source in its worker; with a
+   * city's worth of areas, re-sending them on every cursor move is the lag.
+   */
+  private drawn: {
+    editable?: readonly Area[]
+    selectedId?: string | null
+    locked?: readonly (readonly [Area, number])[]
+    handles?: readonly unknown[]
+  } = {}
 
   constructor(
     readonly map: MapLibreMap,
@@ -93,7 +104,7 @@ export class MapBinding {
     cancelAnimationFrame(this.frame)
     for (const cleanup of this.cleanups.splice(0)) cleanup()
     for (const layer of this.layerIds()) if (this.map.getLayer(layer)) this.map.removeLayer(layer)
-    for (const source of ['areas', 'vertices', 'midpoints', 'draft', 'snap', 'pin']) {
+    for (const source of SOURCES) {
       if (this.map.getSource(this.id(source))) this.map.removeSource(this.id(source))
     }
     this.map.getCanvas().style.cursor = ''
@@ -104,6 +115,7 @@ export class MapBinding {
   refreshTheme(): void {
     this.theme = { ...readTheme(this.map.getContainer()), ...this.options.theme }
     if (this.map.getSource(this.id('areas'))) this.applyPaint()
+    this.drawn = {}
     this.schedule()
   }
 
@@ -169,6 +181,7 @@ export class MapBinding {
 
   private layerIds(): string[] {
     return [
+      'locked-fill',
       'area-fill',
       'area-line',
       'area-locked',
@@ -199,23 +212,25 @@ export class MapBinding {
   private setup(): void {
     if (this.map.getSource(this.id('areas'))) return
     this.theme = { ...readTheme(this.map.getContainer()), ...this.options.theme }
-    for (const source of ['areas', 'vertices', 'midpoints', 'draft', 'snap', 'pin']) {
+    this.drawn = {}
+    for (const source of SOURCES) {
       this.map.addSource(this.id(source), { type: 'geojson', data: EMPTY })
     }
     const map = this.map
+    // Locked areas get a source of their own: they never change while the
+    // user edits, so the frames of a drag or a drawing never re-send them.
+    map.addLayer({ id: this.id('locked-fill'), type: 'fill', source: this.id('locked') })
     map.addLayer({ id: this.id('area-fill'), type: 'fill', source: this.id('areas') })
     map.addLayer({
       id: this.id('area-line'),
       type: 'line',
       source: this.id('areas'),
-      filter: ['!', ['get', 'locked']],
       layout: { 'line-join': 'round' },
     })
     map.addLayer({
       id: this.id('area-locked'),
       type: 'line',
-      source: this.id('areas'),
-      filter: ['get', 'locked'],
+      source: this.id('locked'),
       paint: { 'line-dasharray': [2, 2] },
     })
     map.addLayer({
@@ -253,8 +268,10 @@ export class MapBinding {
     type PaintName = Parameters<MapLibreMap['setPaintProperty']>[1]
     const set = (layer: string, prop: PaintName, value: unknown) =>
       this.map.setPaintProperty(this.id(layer), prop, value as never)
+    set('locked-fill', 'fill-color', ['get', 'color'])
+    set('locked-fill', 'fill-opacity', 0.06)
     set('area-fill', 'fill-color', ['get', 'color'])
-    set('area-fill', 'fill-opacity', ['case', ['get', 'locked'], 0.06, ['get', 'selected'], 0.32, 0.18])
+    set('area-fill', 'fill-opacity', ['case', ['get', 'selected'], 0.32, 0.18])
     set('area-line', 'line-color', ['get', 'color'])
     set('area-line', 'line-width', ['case', ['get', 'selected'], 3, 1.5])
     set('area-locked', 'line-color', t.locked)
@@ -364,6 +381,19 @@ export class MapBinding {
     ])
   }
 
+  /** Longitude/latitude bounds of the screen square `radius` pixels around `point`, whatever the bearing. */
+  private boundsAround(point: { x: number; y: number }, radius: number): Box {
+    const corners = [
+      [point.x - radius, point.y - radius],
+      [point.x + radius, point.y - radius],
+      [point.x + radius, point.y + radius],
+      [point.x - radius, point.y + radius],
+    ].map(([x, y]) => this.map.unproject([x!, y!]))
+    const lngs = corners.map((c) => c.lng)
+    const lats = corners.map((c) => c.lat)
+    return [Math.min(...lngs), Math.min(...lats), Math.max(...lngs), Math.max(...lats)]
+  }
+
   private snapAt(e: MapMouseEvent | MapTouchEvent, ignore?: (p: Position) => boolean): SnapResult {
     const raw: Position = [e.lngLat.lng, e.lngLat.lat]
     const free = (e.originalEvent as MouseEvent).altKey === true
@@ -376,6 +406,7 @@ export class MapBinding {
       tolerancePx: this.tolerance,
       lineTolerancePx: lineTolerance,
       areas: this.state.areas,
+      bounds: this.boundsAround(e.point, this.tolerance),
       lines: this.referenceLines(e.point, lineTolerance),
       points: drafting ? this.state.draft.map((d) => d.position) : undefined,
       ignore,
@@ -401,8 +432,8 @@ export class MapBinding {
 
   private updateHover(e: MapMouseEvent | MapTouchEvent): void {
     const hits = this.map.queryRenderedFeatures(e.point, {
-      layers: [this.id('vertex'), this.id('midpoint'), this.id('area-fill')].filter((l) =>
-        this.map.getLayer(l),
+      layers: [this.id('vertex'), this.id('midpoint'), this.id('area-fill'), this.id('locked-fill')].filter(
+        (l) => this.map.getLayer(l),
       ),
     })
     const top = hits[0]?.layer.id
@@ -411,7 +442,7 @@ export class MapBinding {
         ? 'vertex'
         : top === this.id('midpoint')
           ? 'midpoint'
-          : top === this.id('area-fill')
+          : top === this.id('area-fill') || top === this.id('locked-fill')
             ? 'area'
             : null
     if (hover !== this.hover) {
@@ -428,7 +459,9 @@ export class MapBinding {
   private onClick(e: MapMouseEvent): void {
     if (this.state.mode === 'select') {
       const hits = this.map.queryRenderedFeatures(e.point, {
-        layers: [this.id('vertex'), this.id('area-fill')].filter((l) => this.map.getLayer(l)),
+        layers: [this.id('vertex'), this.id('area-fill'), this.id('locked-fill')].filter((l) =>
+          this.map.getLayer(l),
+        ),
       })
       const vertex = hits.find((h) => h.layer.id === this.id('vertex'))
       if (vertex) {
@@ -438,7 +471,7 @@ export class MapBinding {
       // Several areas can be under the cursor only when overlaps are allowed;
       // prefer one that is not the current selection so a click cycles.
       const areaIds = hits
-        .filter((h) => h.layer.id === this.id('area-fill'))
+        .filter((h) => h.layer.id === this.id('area-fill') || h.layer.id === this.id('locked-fill'))
         .map((h) => String(h.properties.id))
       const next = areaIds.find((id) => id !== this.state.selectedId) ?? areaIds[0] ?? null
       this.core.select(next)
@@ -567,55 +600,8 @@ export class MapBinding {
   private render(): void {
     if (!this.source('areas')) return
     const s = this.state
-    const palette = this.theme.areas
-    this.source('areas')!.setData({
-      type: 'FeatureCollection',
-      features: s.areas.map((a, i) => ({
-        type: 'Feature',
-        properties: {
-          id: a.id,
-          color: typeof a.properties.color === 'string' ? a.properties.color : palette[i % palette.length]!,
-          selected: a.id === s.selectedId,
-          locked: a.locked === true,
-        },
-        geometry: { type: 'Polygon', coordinates: a.rings.map((r) => [...r, r[0]!]) },
-      })),
-    })
-
-    const selected = s.mode === 'select' ? s.areas.find((a) => a.id === s.selectedId && !a.locked) : undefined
-    const editable = selected && !s.readonly
-    const counts = new Map<string, number>()
-    if (editable)
-      for (const a of s.areas)
-        for (const r of a.rings) for (const p of r) counts.set(key(p), (counts.get(key(p)) ?? 0) + 1)
-    const vertices: GeoJSON.Feature[] = []
-    const midpoints: GeoJSON.Feature[] = []
-    if (editable) {
-      selected.rings.forEach((ring, r) => {
-        ring.forEach((p, i) => {
-          const isSelected =
-            s.selectedVertex?.areaId === selected.id &&
-            s.selectedVertex.ring === r &&
-            s.selectedVertex.index === i
-          vertices.push(
-            point(p, {
-              areaId: selected.id,
-              ring: r,
-              index: i,
-              selected: isSelected,
-              shared: (counts.get(key(p)) ?? 0) > 1,
-            }),
-          )
-          const q = ring[(i + 1) % ring.length]!
-          if (!this.dragging)
-            midpoints.push(
-              point([(p[0] + q[0]) / 2, (p[1] + q[1]) / 2], { areaId: selected.id, ring: r, index: i }),
-            )
-        })
-      })
-    }
-    this.source('vertices')!.setData({ type: 'FeatureCollection', features: vertices })
-    this.source('midpoints')!.setData({ type: 'FeatureCollection', features: midpoints })
+    this.renderAreas()
+    this.renderHandles()
 
     const cut = s.mode === 'cut'
     const path = this.core.draftPath()
@@ -649,7 +635,95 @@ export class MapBinding {
       features: this.pin ? [point(this.pin, {})] : [],
     })
   }
+
+  private areaFeature(a: Area, i: number, selected: boolean): GeoJSON.Feature {
+    const palette = this.theme.areas
+    return {
+      type: 'Feature',
+      properties: {
+        id: a.id,
+        color: typeof a.properties.color === 'string' ? a.properties.color : palette[i % palette.length]!,
+        selected,
+        locked: a.locked === true,
+      },
+      geometry: { type: 'Polygon', coordinates: a.rings.map((r) => [...r, r[0]!]) },
+    }
+  }
+
+  private renderAreas(): void {
+    const s = this.state
+    if (this.drawn.editable === s.areas && this.drawn.selectedId === s.selectedId) return
+    const locked: (readonly [Area, number])[] = []
+    const editable: GeoJSON.Feature[] = []
+    s.areas.forEach((a, i) => {
+      if (a.locked) locked.push([a, i])
+      else editable.push(this.areaFeature(a, i, a.id === s.selectedId))
+    })
+    const before = this.drawn.locked
+    const lockedSame =
+      before !== undefined &&
+      before.length === locked.length &&
+      before.every(([a, i], k) => a === locked[k]![0] && i === locked[k]![1])
+    if (!lockedSame) {
+      this.drawn.locked = locked
+      this.source('locked')!.setData({
+        type: 'FeatureCollection',
+        features: locked.map(([a, i]) => this.areaFeature(a, i, false)),
+      })
+    }
+    this.drawn.editable = s.areas
+    this.drawn.selectedId = s.selectedId
+    this.source('areas')!.setData({ type: 'FeatureCollection', features: editable })
+  }
+
+  /** The selected area's vertices and midpoints. */
+  private renderHandles(): void {
+    const s = this.state
+    const selected = s.mode === 'select' ? s.areas.find((a) => a.id === s.selectedId && !a.locked) : undefined
+    const editable = selected && !s.readonly ? selected : undefined
+    const handles = [editable, s.selectedVertex, this.dragging]
+    if (this.drawn.handles?.every((h, i) => h === handles[i])) return
+    this.drawn.handles = handles
+    const vertices: GeoJSON.Feature[] = []
+    const midpoints: GeoJSON.Feature[] = []
+    if (editable) {
+      // Only areas around the selected one can share its corners.
+      const box = polygonBounds(editable.rings)
+      const counts = new Map<string, number>()
+      for (const a of s.areas) {
+        const other = polygonBounds(a.rings)
+        if (!box || !other || !boxesTouch(box, other)) continue
+        for (const r of a.rings) for (const p of r) counts.set(key(p), (counts.get(key(p)) ?? 0) + 1)
+      }
+      editable.rings.forEach((ring, r) => {
+        ring.forEach((p, i) => {
+          const isSelected =
+            s.selectedVertex?.areaId === editable.id &&
+            s.selectedVertex.ring === r &&
+            s.selectedVertex.index === i
+          vertices.push(
+            point(p, {
+              areaId: editable.id,
+              ring: r,
+              index: i,
+              selected: isSelected,
+              shared: (counts.get(key(p)) ?? 0) > 1,
+            }),
+          )
+          const q = ring[(i + 1) % ring.length]!
+          if (!this.dragging)
+            midpoints.push(
+              point([(p[0] + q[0]) / 2, (p[1] + q[1]) / 2], { areaId: editable.id, ring: r, index: i }),
+            )
+        })
+      })
+    }
+    this.source('vertices')!.setData({ type: 'FeatureCollection', features: vertices })
+    this.source('midpoints')!.setData({ type: 'FeatureCollection', features: midpoints })
+  }
 }
+
+const SOURCES = ['areas', 'locked', 'vertices', 'midpoints', 'draft', 'snap', 'pin']
 
 const key = (p: Position) => `${p[0]},${p[1]}`
 

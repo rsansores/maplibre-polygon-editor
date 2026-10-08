@@ -1,7 +1,10 @@
 import { subtract, unite } from './clip'
 import {
+  boxesTouch,
   dedupeRing,
+  mayHold,
   polygonArea,
+  polygonBounds,
   polygonThickness,
   roundPosition,
   samePosition,
@@ -728,9 +731,13 @@ export class PolygonEditorCore {
       const overlapped = findOverlap(rings, others, this.epsilon, this.options.overlapToleranceM)
       if (overlapped && policy === 'forbid') return this.refuse({ code: 'overlap', otherId: overlapped.id })
       if (overlapped) {
+        const box = polygonBounds(rings)!
         const pieces = subtract(
           rings,
-          others.map((a) => a.rings),
+          others.flatMap((a) => {
+            const other = polygonBounds(a.rings)
+            return other && boxesTouch(box, other, this.epsilon) ? [a.rings] : []
+          }),
           this.epsilon,
         )
           .map((polygon) =>
@@ -818,7 +825,10 @@ export class PolygonEditorCore {
    */
   private lockedAt(position: Position): Area | undefined {
     return this.areas.find(
-      (a) => a.locked && a.rings.some((r) => r.some((p) => samePosition(p, position, this.epsilon))),
+      (a) =>
+        a.locked &&
+        mayHold(a.rings, position, this.epsilon) &&
+        a.rings.some((r) => r.some((p) => samePosition(p, position, this.epsilon))),
     )
   }
 
@@ -832,6 +842,7 @@ export class PolygonEditorCore {
     return this.areas.find(
       (x) =>
         x.locked &&
+        mayHold(x.rings, a, this.edgeEpsilon) &&
         x.rings.some(
           (r) =>
             locateOnRing(r, a, this.edgeEpsilon) &&

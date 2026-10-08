@@ -2,11 +2,14 @@ import { describe, expect, it } from 'vitest'
 import { square } from '../test-support/fixtures'
 import {
   bounds,
+  boxesTouch,
+  boxHolds,
   dedupeRing,
   distance,
   onSegment,
   pointInPolygon,
   polygonArea,
+  polygonBounds,
   ringArea,
   ringLength,
   roundPosition,
@@ -97,5 +100,23 @@ describe('helpers', () => {
   it('computes the bounds of a set of points', () => {
     expect(bounds(square(1, 2, 3))).toEqual([1, 2, 4, 5])
     expect(bounds([])).toBeNull()
+  })
+})
+
+describe('bounds', () => {
+  it("remembers a polygon's box per rings array", () => {
+    const rings = [square(1, 2, 3)]
+    expect(polygonBounds(rings)).toEqual([1, 2, 4, 5])
+    expect(polygonBounds(rings)).toBe(polygonBounds(rings))
+    expect(polygonBounds([[]])).toBeNull()
+  })
+
+  it('counts touching and the margin as meeting', () => {
+    expect(boxesTouch([0, 0, 1, 1], [1, 0, 2, 1])).toBe(true)
+    expect(boxesTouch([0, 0, 1, 1], [1.1, 0, 2, 1])).toBe(false)
+    expect(boxesTouch([0, 0, 1, 1], [1.1, 0, 2, 1], 0.1)).toBe(true)
+    expect(boxHolds([0, 0, 1, 1], [1, 1])).toBe(true)
+    expect(boxHolds([0, 0, 1, 1], [1.05, 0.5])).toBe(false)
+    expect(boxHolds([0, 0, 1, 1], [1.05, 0.5], 0.1)).toBe(true)
   })
 })

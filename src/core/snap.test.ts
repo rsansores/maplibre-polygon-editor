@@ -27,6 +27,19 @@ describe('snap', () => {
     expect(onSegment(result.position, [0, 0], [0.01, 0], 1e-12)).toBe(true)
   })
 
+  it('skips areas outside the bounds it is given, and finds the same target inside them', () => {
+    const raw: Position = [0.01003, 0.00004]
+    const around = snap(raw, at(raw), {
+      project,
+      tolerancePx: 10,
+      areas,
+      bounds: [0.0099, -0.0001, 0.0101, 0.0001],
+    })
+    expect(around).toEqual(snap(raw, at(raw), { project, tolerancePx: 10, areas }))
+    const elsewhere = snap(raw, at(raw), { project, tolerancePx: 10, areas, bounds: [1, 1, 2, 2] })
+    expect(elsewhere.kind).toBe('none')
+  })
+
   it('prefers a vertex over a closer edge', () => {
     const raw: Position = [0.00006, 0.00001] // 1 px from the edge, ~6 px from the corner
     const result = snap(raw, at(raw), { project, tolerancePx: 10, areas })

@@ -26,7 +26,7 @@ import {
   type OverlapPolicy,
   type Permissions,
 } from '../core/editor'
-import { polygonArea, ringLength } from '../core/geo'
+import { boxesTouch, mayHold, polygonArea, polygonBounds, ringLength } from '../core/geo'
 import { fromGeoJSON, toFeatureCollection } from '../core/geojson'
 import { fromKML } from '../core/kml'
 import type { Router } from '../core/trace'
@@ -167,7 +167,10 @@ export function usePolygonEditor(options: PolygonEditorOptions = {}) {
     if (!position) return null
     const k = key(position)
     const sharedWith = areas.value.filter(
-      (a) => a.id !== ref.areaId && a.rings.some((r) => r.some((p) => key(p) === k)),
+      (a) =>
+        a.id !== ref.areaId &&
+        mayHold(a.rings, position, 0) &&
+        a.rings.some((r) => r.some((p) => key(p) === k)),
     ).length
     return { ref, position, sharedWith }
   })
@@ -185,9 +188,13 @@ export function usePolygonEditor(options: PolygonEditorOptions = {}) {
     const area = areas.value.find((a) => a.id === id)
     if (!area) return []
     const mine = new Set(area.rings.flatMap((r) => r.map(key)))
-    return areas.value.filter(
-      (a) => a.id !== id && !a.locked && a.rings.flat().filter((p) => mine.has(key(p))).length >= 2,
-    )
+    const box = polygonBounds(area.rings)
+    return areas.value.filter((a) => {
+      if (a.id === id || a.locked || !box) return false
+      const other = polygonBounds(a.rings)
+      if (!other || !boxesTouch(box, other)) return false
+      return a.rings.flat().filter((p) => mine.has(key(p))).length >= 2
+    })
   }
 
   function nameOf(area: Area): string {
