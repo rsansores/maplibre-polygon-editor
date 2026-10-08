@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## Unreleased
 
+## 0.2.0 — 2026-10-08
+
 ### Fixed
 
 - Large sets of areas no longer make editing lag. Each polygon's bounds are remembered, and
