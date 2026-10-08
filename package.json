@@ -1,6 +1,6 @@
 {
   "name": "maplibre-polygon-editor",
-  "version": "0.0.0",
+  "version": "0.2.0",
   "description": "Precise, topology-aware polygon editor for MapLibre GL, with a Vue 3 component. Shared borders stay shared; snapping helps but is never required.",
   "type": "module",
   "license": "MIT OR Apache-2.0",
