@@ -356,7 +356,8 @@ any other, so the new border matches the locked one exactly.
 
 When ground under a locked area is not the user's to take at all — another owner's areas, shown for
 context — set `lockedOverlap: 'forbid'`. A drawing, an edit or an import that would cover any part
-of a locked area (more than `overlapToleranceM2`) is then refused with `overlap-locked` instead of
+of a locked area (a piece thicker than `overlapToleranceM`, see
+[Storing areas on a server](#storing-areas-on-a-server)) is then refused with `overlap-locked` instead of
 trimmed; the drawing stays on screen to be fixed, and imported areas that overlap are skipped.
 Touching a locked area along a shared border is not an overlap. Overlaps with unlocked areas keep
 following `overlap`, so a drawing over the user's own neighbours is still trimmed to share their
@@ -509,19 +510,38 @@ OGC simple-polygon rules plus "no overlap", so the server checks are:
 -- Valid shape (the same rules the editor enforces).
 SELECT ST_IsValid(geom) FROM ...;
 
--- No overlap with another area of the same set. Touching along a border is
--- allowed; covering shared ground is not. A tolerance absorbs floating-point noise.
+-- No overlap with another area of the same set: no connected piece of the
+-- shared ground is thicker than 1 cm (thickness = 2 · area / perimeter, metres).
 SELECT other.id
 FROM areas other
 WHERE other.set_id = $set AND other.id <> $id
   AND ST_Intersects(other.geom, $geom)
-  AND ST_Area(ST_Intersection(other.geom, $geom)::geography) > 0.01;  -- m²
+  AND EXISTS (
+    SELECT 1
+    FROM ST_Dump(ST_Intersection(other.geom, $geom)) d
+    WHERE ST_Dimension(d.geom) = 2
+      AND 2 * ST_Area(d.geom::geography) / NULLIF(ST_Perimeter(d.geom::geography), 0) > 0.01
+  );
 ```
 
-Because shared borders hold _identical_ vertices, two neighbours relate as `ST_Touches` — never
-`ST_Overlaps` — and the area of their intersection is exactly zero. If your server sees slivers,
-something between the editor and the database changed the coordinates (a float column with less
-precision, a reprojection, a simplification). Keep at least as many decimals as `decimals`.
+**Measure overlap by thickness, not area.** Two areas overlap when some connected piece of their
+intersection is thicker than `overlapToleranceM` (default `0.01`, 1 cm), a piece's thickness being
+`2 · area / perimeter` in metres, with the perimeter counting every ring. For a thin strip that is
+its width; a real overlap of 1 m × 1 m is 0.5 m thick. An area tolerance cannot tell the two apart:
+where the editor clips a new border onto the interior of a neighbour's edge, the new corners are
+rounded to `decimals` (8 → ~1.1 mm), and a neighbour that does not take those corners — a locked
+one — keeps its straight edge. The two borders then disagree by up to a rounding step, leaving a
+sliver whose _area_ grows with the length of the border (a fraction of a square metre on a few
+kilometres) while its _thickness_ stays around a millimetre. Use the same rule on the server as
+the editor does, or the server will call two areas that merely share a border overlapping.
+`overlaps(a, b, { epsilon, toleranceM })` from `maplibre-polygon-editor/core` is the editor's own
+predicate, and `overlapThickness(a, b, epsilon)` the number it compares.
+
+Where both neighbours hold the corners, shared borders hold _identical_ vertices, the two relate as
+`ST_Touches` — never `ST_Overlaps` — and their intersection has no area at all. If your server sees
+slivers thicker than the tolerance, something between the editor and the database changed the
+coordinates (a float column with less precision, a reprojection, a simplification). Keep at least
+as many decimals as `decimals`.
 
 **Decide what a point on a border belongs to.** With exactly shared borders, a point _on_ the
 border (an address geocoded to the street centreline, say) is covered by both neighbours:

@@ -71,6 +71,16 @@ export function polygonArea(rings: readonly Ring[]): number {
   return Math.max(0, total)
 }
 
+/**
+ * How thick a polygon is, in metres: `2 · area / perimeter`, the perimeter
+ * counting every ring. For a long thin strip this is its width; for a square
+ * of side `s` it is `s / 2`. Zero for a polygon with no boundary.
+ */
+export function polygonThickness(rings: readonly Ring[]): number {
+  const perimeter = rings.reduce((sum, ring) => sum + ringLength(ring), 0)
+  return perimeter > 0 ? (2 * polygonArea(rings)) / perimeter : 0
+}
+
 /** Planar signed area in degrees², positive counter-clockwise. Used only for orientation. */
 export function planarSignedArea(ring: Ring): number {
   let total = 0

@@ -1,5 +1,12 @@
 import { subtract, unite } from './clip'
-import { dedupeRing, polygonArea, roundPosition, samePosition, segmentIntersection } from './geo'
+import {
+  dedupeRing,
+  polygonArea,
+  polygonThickness,
+  roundPosition,
+  samePosition,
+  segmentIntersection,
+} from './geo'
 import { History } from './history'
 import { splitPolygon } from './split'
 import type { SnapResult } from './snap'
@@ -58,8 +65,13 @@ export interface EditorOptions {
   overlap?: OverlapPolicy
   /** Overlaps with locked areas: like any other (`clip`, default) or refused (`forbid`). */
   lockedOverlap?: LockedOverlapPolicy
-  /** Overlap smaller than this many square metres is numerical noise, not an overlap. */
-  overlapToleranceM2?: number
+  /**
+   * Shared ground no thicker than this many metres is rounding, not an
+   * overlap. Thickness is `2 · area / perimeter` of each connected piece of
+   * the intersection, so it is the width of a sliver whatever its length.
+   * Default `0.01` (1 cm), well above the rounding at 8 decimals (~1.1 mm).
+   */
+  overlapToleranceM?: number
   /**
    * Optional router for "follow roads", replacing the built-in street path.
    * It must ignore one-way streets and turn restrictions (a walking profile,
@@ -184,7 +196,7 @@ export class PolygonEditorCore {
     this.options = {
       overlap: options.overlap ?? 'clip',
       lockedOverlap: options.lockedOverlap ?? 'clip',
-      overlapToleranceM2: options.overlapToleranceM2 ?? 0.01,
+      overlapToleranceM: options.overlapToleranceM ?? 0.01,
       router: options.router ?? null,
       maxDetour: options.maxDetour ?? 3,
       straightness: options.straightness ?? 4,
@@ -321,7 +333,7 @@ export class PolygonEditorCore {
       rings,
       others.filter((a) => a.locked),
       this.epsilon,
-      this.options.overlapToleranceM2,
+      this.options.overlapToleranceM,
     )
   }
 
@@ -713,7 +725,7 @@ export class PolygonEditorCore {
     if (lock) return this.refuse({ code: 'overlap-locked', otherId: lock.id })
     const policy = this.options.overlap
     if (policy !== 'allow') {
-      const overlapped = findOverlap(rings, others, this.epsilon, this.options.overlapToleranceM2)
+      const overlapped = findOverlap(rings, others, this.epsilon, this.options.overlapToleranceM)
       if (overlapped && policy === 'forbid') return this.refuse({ code: 'overlap', otherId: overlapped.id })
       if (overlapped) {
         const pieces = subtract(
@@ -730,7 +742,8 @@ export class PolygonEditorCore {
             ),
           )
           .filter(
-            (polygon) => polygon[0]!.length >= 3 && polygonArea(polygon) > this.options.overlapToleranceM2,
+            (polygon) =>
+              polygon[0]!.length >= 3 && polygonThickness(polygon) > this.options.overlapToleranceM,
           )
         if (pieces.length === 0) return this.refuse({ code: 'clipped-away' })
         pieces.sort((a, b) => polygonArea(b) - polygonArea(a))
@@ -1102,7 +1115,7 @@ export class PolygonEditorCore {
     if (this.options.overlap !== 'allow') {
       for (const area of changed) {
         const others = next.filter((a) => a.id !== area.id)
-        const hit = findOverlap(area.rings, others, this.epsilon, this.options.overlapToleranceM2)
+        const hit = findOverlap(area.rings, others, this.epsilon, this.options.overlapToleranceM)
         if (hit) {
           this.notify()
           return this.refuse({ code: 'overlap', areaId: area.id, otherId: hit.id })

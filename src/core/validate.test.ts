@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { area, square } from '../test-support/fixtures'
-import { findOverlap, polygonIssues, ringSelfIntersects } from './validate'
+import { overlapThickness } from './clip'
+import { polygonThickness } from './geo'
+import { findOverlap, overlaps, polygonIssues, ringSelfIntersects } from './validate'
 
 const EPS = 5e-9
 
@@ -76,5 +78,50 @@ describe('findOverlap', () => {
 
   it('ignores areas whose bounds are apart', () => {
     expect(findOverlap([square(1, 1, 0.01)], [left], EPS, 0.01)).toBeNull()
+  })
+})
+
+describe('overlaps (by thickness, not area)', () => {
+  // One metre of latitude, in degrees.
+  const M = 1 / 111_195
+
+  it('measures a thin strip by its width', () => {
+    const strip: [number, number][] = [
+      [0, 0],
+      [0.5, 0],
+      [0.5, M],
+      [0, M],
+    ]
+    expect(polygonThickness([strip])).toBeCloseTo(1, 2)
+  })
+
+  it('never counts a long shared border that rounding left a sliver along', () => {
+    // A 55 km border, the neighbour's side one 8th-decimal step (~1.1 mm) past it.
+    const a = [square(0, 0, 0.5)]
+    const b: [number, number][][] = [
+      [
+        [0.5 - 1e-8, 0],
+        [1, 0],
+        [1, 0.5],
+        [0.5 - 1e-8, 0.5],
+      ],
+    ]
+    expect(overlapThickness(a, b, EPS)).toBeLessThan(0.002)
+    expect(overlaps(a, b)).toBe(false)
+    expect(findOverlap(a, [area('b', ...b)], EPS, 0.01)).toBeNull()
+  })
+
+  it('counts a real overlap of one metre by one metre', () => {
+    const a = [square(0, 0, 0.01)]
+    const b = [square(0.01 - M, 0.01 - M, 0.01)]
+    expect(overlapThickness(a, b, EPS)).toBeGreaterThan(0.4)
+    expect(overlaps(a, b)).toBe(true)
+    expect(findOverlap(a, [area('b', ...b)], EPS, 0.01)?.id).toBe('b')
+  })
+
+  it('takes the tolerance in metres', () => {
+    const a = [square(0, 0, 0.01)]
+    const b = [square(0.01 - M, 0.01 - M, 0.01)]
+    expect(overlaps(a, b, { toleranceM: 1 })).toBe(false)
   })
 })

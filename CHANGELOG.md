@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## Unreleased
 
+### Changed
+
+- **Breaking:** overlap is measured by thickness, not area. `overlapToleranceM2` (square metres) is
+  replaced by `overlapToleranceM` (metres, default `0.01`): two areas overlap when some connected
+  piece of their intersection has `2 · area / perimeter` above it. A border clipped onto a locked
+  neighbour's edge leaves a rounding sliver whose area grows with the border's length, so an area
+  tolerance called neighbours that merely share a border overlapping. `overlapArea` is replaced by
+  `overlapThickness`; `overlaps` and `polygonThickness` are new. The integration guide gives the
+  same rule in PostGIS.
+
 ### Added
 
 - `listed`: a host can keep areas out of `PolygonEditorAreaList` while they stay on the map — e.g.

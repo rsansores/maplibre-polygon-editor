@@ -1,4 +1,4 @@
-import { overlapArea } from './clip'
+import { overlapThickness } from './clip'
 import { bounds, onSegment, planarSignedArea, pointInRing, segmentsCross } from './geo'
 import type { Area, IssueCode, Ring } from './types'
 
@@ -67,22 +67,32 @@ function boxesOverlap(a: [number, number, number, number], b: [number, number, n
   return a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3]
 }
 
+export interface OverlapOptions {
+  /** Two coordinates closer than this, in degrees, are the same. Default `5e-9` (half the 8th decimal). */
+  epsilon?: number
+  /** A piece of shared ground no thicker than this many metres is not an overlap. Default `0.01`. */
+  toleranceM?: number
+}
+
 /**
- * The first area in `others` that `rings` overlaps by more than
- * `toleranceM2` square metres, or `null`. Sharing a border is not overlapping.
+ * Do two polygons overlap? They do when some connected piece of their
+ * intersection is thicker than `toleranceM`, a piece's thickness being
+ * `2 · area / perimeter` in metres. Sharing a border is not overlapping, nor is
+ * the sliver that rounding the corners of one border onto another leaves.
  */
+export function overlaps(a: readonly Ring[], b: readonly Ring[], options: OverlapOptions = {}): boolean {
+  const boxA = bounds(a[0] ?? [])
+  const boxB = bounds(b[0] ?? [])
+  if (!boxA || !boxB || !boxesOverlap(boxA, boxB)) return false
+  return overlapThickness(a, b, options.epsilon ?? 5e-9) > (options.toleranceM ?? 0.01)
+}
+
+/** The first area in `others` that `rings` overlaps (see `overlaps`), or `null`. */
 export function findOverlap(
   rings: readonly Ring[],
   others: readonly Area[],
   epsilon: number,
-  toleranceM2: number,
+  toleranceM: number,
 ): Area | null {
-  const box = bounds(rings[0] ?? [])
-  if (!box) return null
-  for (const other of others) {
-    const otherBox = bounds(other.rings[0] ?? [])
-    if (!otherBox || !boxesOverlap(box, otherBox)) continue
-    if (overlapArea(rings, other.rings, epsilon) > toleranceM2) return other
-  }
-  return null
+  return others.find((other) => overlaps(rings, other.rings, { epsilon, toleranceM })) ?? null
 }
