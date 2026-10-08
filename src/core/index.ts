@@ -16,6 +16,7 @@ export { MapBinding } from '../map/binding'
 export type { MapBindingOptions, MapTheme } from '../map/binding'
 
 export type { Area, EdgeRef, Issue, IssueCode, Position, Ring, ScreenPoint, VertexRef } from './types'
+export type { Box } from './geo'
 export type { SnapContext, SnapKind, SnapResult } from './snap'
 export type { Router } from './trace'
 

@@ -185,11 +185,24 @@ walking the ring forward from the exit back to the entry, and from the entry to 
 closed by the cut path. Holes go to the piece containing them; a cut through a hole is refused. The
 larger piece keeps the area's id and properties.
 
+## Scale
+
+Every operation is pure and never mutates a ring, so each polygon's bounding box is computed once
+and remembered against its rings array (`polygonBounds`). Everything that looks for "the areas
+around here" skips by that box first: snapping (the binding passes the cursor's bounds), dragging,
+inserting and removing a corner, tracing, noding, the overlap checks and the clip of a new drawing.
+An edit costs what the few areas around it cost, however many are loaded — with 1 000 areas of
+100–300 vertices, a mouse move snaps in ~0.04 ms and dropping a corner takes ~20–70 ms, nearly all
+of it the exact overlap test against the neighbours that touch it.
+
 ## Rendering
 
-The binding owns six GeoJSON sources (`pe-areas`, `pe-vertices`, `pe-midpoints`, `pe-draft`,
-`pe-snap`, `pe-pin`) and re-renders them at most once per animation frame. Only the selected area's
-vertices and midpoints are drawn, so a set of thousands of areas costs one polygon layer. Colours
+The binding owns seven GeoJSON sources (`pe-areas`, `pe-locked`, `pe-vertices`, `pe-midpoints`,
+`pe-draft`, `pe-snap`, `pe-pin`) and re-renders at most once per animation frame, sending a source
+only what changed since the last frame: `setData` makes MapLibre re-tile the whole source, so a
+cursor move re-sends the draft and the snap marker, never the areas. Locked areas have a source of
+their own, because they do not change while the user edits; a drag re-sends the editable areas,
+not the city around them. Only the selected area's vertices and midpoints are drawn. Colours
 are read from CSS custom properties and resolved to `rgba()` through a 1×1 canvas, so any CSS
 colour syntax works.
 

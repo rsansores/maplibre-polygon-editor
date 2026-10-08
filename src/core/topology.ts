@@ -1,4 +1,12 @@
-import { onSegment, projectOntoSegment, samePosition } from './geo'
+import {
+  boxesTouch,
+  boxHolds,
+  mayHold,
+  onSegment,
+  polygonBounds,
+  projectOntoSegment,
+  samePosition,
+} from './geo'
 import type { Area, EdgeRef, Position, VertexRef } from './types'
 
 /**
@@ -12,13 +20,17 @@ import type { Area, EdgeRef, Position, VertexRef } from './types'
  * editor sets well below the precision it rounds coordinates to.
  *
  * Every function here is pure: it returns new arrays and never mutates its
- * input, which is what makes undo a matter of keeping the old value.
+ * input, which is what makes undo a matter of keeping the old value. That is
+ * also what lets each one skip, by its remembered bounds, every area too far
+ * away to hold the vertex in question: with a city's worth of areas loaded,
+ * an edit touches the few around it, not all of them.
  */
 
 /** Every vertex, in any area, sitting at `position`. */
 export function linkedVertices(areas: readonly Area[], position: Position, epsilon: number): VertexRef[] {
   const out: VertexRef[] = []
   for (const area of areas) {
+    if (!mayHold(area.rings, position, epsilon)) continue
     area.rings.forEach((ring, r) => {
       ring.forEach((p, i) => {
         if (samePosition(p, position, epsilon)) out.push({ areaId: area.id, ring: r, index: i })
@@ -42,7 +54,7 @@ export function moveVertex(areas: readonly Area[], ref: VertexRef, to: Position,
   const from = vertexAt(areas, ref)
   if (!from) return [...areas]
   return areas.map((area) => {
-    if (area.locked) return area
+    if (area.locked || !mayHold(area.rings, from, epsilon)) return area
     let changed = false
     const rings = area.rings.map((ring) =>
       ring.map((p) => {
@@ -73,7 +85,8 @@ export function insertVertex(
   const b = ring[(edge.index + 1) % ring.length]!
 
   const next = areas.map((candidate) => {
-    if (candidate.locked && candidate.id !== edge.areaId) return candidate
+    if (candidate.id !== edge.areaId && (candidate.locked || !mayHold(candidate.rings, a, epsilon)))
+      return candidate
     let changed = false
     const rings = candidate.rings.map((r, ri) => {
       const out: Position[] = []
@@ -103,7 +116,7 @@ export function removeVertex(areas: readonly Area[], ref: VertexRef, epsilon: nu
   const at = vertexAt(areas, ref)
   if (!at) return [...areas]
   return areas.map((area) => {
-    if (area.locked) return area
+    if (area.locked || !mayHold(area.rings, at, epsilon)) return area
     const rings = area.rings.map((ring) => ring.filter((p) => !samePosition(p, at, epsilon)))
     const changed = rings.some((r, i) => r.length !== area.rings[i]!.length)
     return changed ? { ...area, rings } : area
@@ -119,54 +132,53 @@ export function removeVertex(areas: readonly Area[], ref: VertexRef, epsilon: nu
  * may receive them.
  */
 export function nodeAreas(areas: readonly Area[], sources: readonly string[], epsilon: number): Area[] {
-  const donors = areas.filter((a) => sources.includes(a.id))
-  let result = [...areas]
-  for (const donor of donors) {
-    const current = result.find((a) => a.id === donor.id) ?? donor
-    for (const ring of current.rings) {
-      for (const p of ring) result = insertOnEdges(result, p, donor.id, epsilon)
+  const result = [...areas]
+  const donors = result.flatMap((a, i) => (sources.includes(a.id) ? [i] : []))
+  const near = (i: number, j: number) => {
+    const a = polygonBounds(result[i]!.rings)
+    const b = polygonBounds(result[j]!.rings)
+    return a !== null && b !== null && boxesTouch(a, b, epsilon)
+  }
+  for (const d of donors) {
+    const receivers = result.flatMap((a, i) => (i !== d && !a.locked && near(i, d) ? [i] : []))
+    for (const ring of result[d]!.rings) {
+      for (const p of ring) {
+        for (const i of receivers) result[i] = insertOnEdges(result[i]!, p, epsilon)
+      }
     }
   }
   // A receiving area may have donated nothing but gained vertices; donors, in
   // turn, must hold every vertex their neighbours hold along shared edges.
-  for (const area of areas) {
-    if (sources.includes(area.id)) continue
-    const current = result.find((a) => a.id === area.id)!
-    for (const ring of current.rings) {
-      for (const p of ring) {
-        for (const donorId of sources) result = insertOnEdges(result, p, area.id, epsilon, donorId)
+  result.forEach((area, i) => {
+    if (sources.includes(area.id)) return
+    for (const d of donors) {
+      if (result[d]!.locked || !near(i, d)) continue
+      for (const ring of result[i]!.rings) {
+        for (const p of ring) result[d] = insertOnEdges(result[d]!, p, epsilon)
       }
     }
-  }
+  })
   return result
 }
 
-/** Insert `p` into every edge (of other areas) it lies strictly inside. */
-function insertOnEdges(
-  areas: Area[],
-  p: Position,
-  ownerId: string,
-  epsilon: number,
-  onlyId?: string,
-): Area[] {
-  return areas.map((area) => {
-    if (area.id === ownerId || area.locked) return area
-    if (onlyId !== undefined && area.id !== onlyId) return area
-    let changed = false
-    const rings = area.rings.map((ring) => {
-      if (ring.some((q) => samePosition(q, p, epsilon))) return ring
-      for (let i = 0; i < ring.length; i++) {
-        const a = ring[i]!
-        const b = ring[(i + 1) % ring.length]!
-        if (onSegment(p, a, b, epsilon)) {
-          changed = true
-          return [...ring.slice(0, i + 1), p, ...ring.slice(i + 1)]
-        }
+/** Insert `p` into the first edge of each ring of `area` it lies strictly inside. */
+function insertOnEdges(area: Area, p: Position, epsilon: number): Area {
+  const box = polygonBounds(area.rings)
+  if (!box || !boxHolds(box, p, epsilon)) return area
+  let changed = false
+  const rings = area.rings.map((ring) => {
+    if (ring.some((q) => samePosition(q, p, epsilon))) return ring
+    for (let i = 0; i < ring.length; i++) {
+      const a = ring[i]!
+      const b = ring[(i + 1) % ring.length]!
+      if (onSegment(p, a, b, epsilon)) {
+        changed = true
+        return [...ring.slice(0, i + 1), p, ...ring.slice(i + 1)]
       }
-      return ring
-    })
-    return changed ? { ...area, rings } : area
+    }
+    return ring
   })
+  return changed ? { ...area, rings } : area
 }
 
 /** Position along a ring: `index + t`, where `t` ∈ [0, 1) is how far along edge `index`. */

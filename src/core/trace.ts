@@ -1,4 +1,4 @@
-import { distance, onSegment, pathLength, projectOntoSegment, samePosition } from './geo'
+import { distance, mayHold, onSegment, pathLength, projectOntoSegment, samePosition } from './geo'
 import { locateOnRing, walkForward } from './topology'
 import type { SnapResult } from './snap'
 import type { Area, Position } from './types'
@@ -24,6 +24,7 @@ export function traceAlongAreas(
 ): Position[] | null {
   const ordered = prefer ? [...areas].sort((a, b) => (a.id === prefer ? -1 : b.id === prefer ? 1 : 0)) : areas
   for (const area of ordered) {
+    if (!mayHold(area.rings, from, epsilon) || !mayHold(area.rings, to, epsilon)) continue
     for (const ring of area.rings) {
       const a = locateOnRing(ring, from, epsilon)
       const b = locateOnRing(ring, to, epsilon)

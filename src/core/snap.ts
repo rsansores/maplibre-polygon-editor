@@ -1,4 +1,4 @@
-import { lerp, projectOntoSegment } from './geo'
+import { boxesTouch, lerp, polygonBounds, projectOntoSegment, type Box } from './geo'
 import type { Area, Position, ScreenPoint } from './types'
 
 /**
@@ -38,6 +38,13 @@ export interface SnapContext {
   lineTolerancePx?: number
   /** Areas whose vertices and edges attract. */
   areas: readonly Area[]
+  /**
+   * Longitude/latitude bounds of everything within `tolerancePx` of the
+   * cursor. Areas outside it are skipped without projecting a vertex — with
+   * many areas loaded, this is what keeps a mouse move cheap. Without it every
+   * area is tried.
+   */
+  bounds?: Box
   /** Reference polylines (e.g. streets from the basemap) that attract. */
   lines?: readonly (readonly Position[])[]
   /** Extra points that attract as vertices (e.g. the draft's own first vertex). */
@@ -77,6 +84,10 @@ export function snap(raw: Position, cursor: ScreenPoint, ctx: SnapContext): Snap
   }
 
   for (const area of ctx.areas) {
+    if (ctx.bounds) {
+      const box = polygonBounds(area.rings)
+      if (!box || !boxesTouch(box, ctx.bounds)) continue
+    }
     area.rings.forEach((ring, r) => {
       const screen = ring.map((p) => toPair(ctx.project(p)))
       ring.forEach((p, i) => {

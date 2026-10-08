@@ -6,6 +6,20 @@ All notable changes to this project are documented here. The format follows
 
 ## Unreleased
 
+### Fixed
+
+- Large sets of areas no longer make editing lag. Each polygon's bounds are remembered, and
+  snapping, dragging, tracing, noding, the overlap checks and clipping skip every area too far away
+  to matter; with 1 000 areas a mouse move went from ~4–13 ms to ~0.04 ms of snapping, and dropping
+  a corner from 1–5 s to 20–70 ms. The map binding sends MapLibre only the sources that changed, so
+  moving the cursor no longer re-tiles every area each frame, and locked areas are drawn from a
+  source of their own (`pe-locked`, layer `pe-locked-fill`) that a drag or a drawing never touches.
+
+### Added
+
+- `SnapContext.bounds`: the longitude/latitude box around the cursor; `snap()` skips areas outside
+  it. The map binding sets it.
+
 ## 0.1.0 — 2026-10-08
 
 First release.

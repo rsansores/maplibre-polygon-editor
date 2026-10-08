@@ -84,6 +84,24 @@ describe('noding', () => {
     const noded = nodeAreas(areas, ['n'], 1e-8)
     expect(noded[0]!.rings[0]).toContainEqual([1, 0.5])
   })
+
+  it('gives and takes vertices both ways, and leaves far areas alone', () => {
+    // n's left edge runs along a's right edge, past a's corner (1, 1).
+    const areas = [
+      area('a', square(0, 0, 1)),
+      area('n', [
+        [1, 0.5],
+        [2, 0.5],
+        [2, 2],
+        [1, 2],
+      ]),
+      area('far', square(10, 10, 1)),
+    ]
+    const noded = nodeAreas(areas, ['n'], 1e-8)
+    expect(noded[0]!.rings[0]).toContainEqual([1, 0.5])
+    expect(noded[1]!.rings[0]).toContainEqual([1, 1])
+    expect(noded[2]).toBe(areas[2])
+  })
 })
 
 describe('walking a ring', () => {

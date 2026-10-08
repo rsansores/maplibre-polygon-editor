@@ -1,5 +1,5 @@
 import { overlapThickness } from './clip'
-import { bounds, onSegment, planarSignedArea, pointInRing, segmentsCross } from './geo'
+import { boxesTouch, onSegment, planarSignedArea, pointInRing, polygonBounds, segmentsCross } from './geo'
 import type { Area, IssueCode, Ring } from './types'
 
 /**
@@ -63,10 +63,6 @@ function isOnRing(p: Ring[number], ring: Ring, epsilon: number): boolean {
   return ring.some((a, i) => onSegment(p, a, ring[(i + 1) % ring.length]!, epsilon))
 }
 
-function boxesOverlap(a: [number, number, number, number], b: [number, number, number, number]): boolean {
-  return a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3]
-}
-
 export interface OverlapOptions {
   /** Two coordinates closer than this, in degrees, are the same. Default `5e-9` (half the 8th decimal). */
   epsilon?: number
@@ -81,9 +77,9 @@ export interface OverlapOptions {
  * the sliver that rounding the corners of one border onto another leaves.
  */
 export function overlaps(a: readonly Ring[], b: readonly Ring[], options: OverlapOptions = {}): boolean {
-  const boxA = bounds(a[0] ?? [])
-  const boxB = bounds(b[0] ?? [])
-  if (!boxA || !boxB || !boxesOverlap(boxA, boxB)) return false
+  const boxA = polygonBounds(a)
+  const boxB = polygonBounds(b)
+  if (!boxA || !boxB || !boxesTouch(boxA, boxB)) return false
   return overlapThickness(a, b, options.epsilon ?? 5e-9) > (options.toleranceM ?? 0.01)
 }
 
