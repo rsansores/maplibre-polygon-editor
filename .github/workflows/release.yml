@@ -1,9 +1,10 @@
 name: Release
 
-# Manual, click-to-release. Publishes maplibre-polygon-editor to npm using OIDC
+# Manual, click-to-release. Stages maplibre-polygon-editor on npm using OIDC
 # Trusted Publishing, so no long-lived registry token is ever stored in this
-# repo. The publish job runs in the protected `release` environment and waits
-# for your approval before anything reaches the registry. See RELEASING.md.
+# repo. The job runs in the protected `release` environment and waits for your
+# approval; the staged version is public only once you approve it on npm with
+# 2FA (`npm stage approve`). See RELEASING.md.
 #
 # Third-party actions are pinned to full commit SHAs — a hijacked tag cannot
 # inject code into the publish job. Dependabot proposes updates.
@@ -66,7 +67,7 @@ jobs:
         with:
           fetch-depth: 0
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
-      # Node 24 ships npm >= 11.5.1, which Trusted Publishing needs. Do NOT
+      # Node 24 ships npm >= 11.15.0, which staged publishing needs. Do NOT
       # `npm install -g npm@latest`: upgrading the bundled npm in place has
       # broken its sigstore dependency and with it `--provenance`.
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -74,11 +75,11 @@ jobs:
           node-version: 24
           registry-url: 'https://registry.npmjs.org'
           cache: pnpm
-      - name: npm version (must be >= 11.5.1 for Trusted Publishing)
+      - name: npm version (must be >= 11.15.0 for staged publishing)
         run: npm --version
 
       # Set the version in the working tree only. It is committed last, after
-      # npm accepted the package, so a failed publish leaves the repo clean and
+      # npm accepted the staged package, so a failed run leaves the repo clean and
       # the run retryable.
       - name: Set version
         run: npm version "$VERSION" --no-git-tag-version --allow-same-version
@@ -86,10 +87,12 @@ jobs:
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm build
 
-      - name: Publish to npm
-        # --ignore-scripts: dist is already built. A real run attaches
+      - name: Stage on npm
+        # The trusted publisher may only stage (npm's recommendation): a
+        # version reaches the public only when a maintainer approves it with
+        # 2FA. --ignore-scripts: dist is already built. A real run attaches
         # provenance; a dry run only validates the tarball.
-        run: npm publish --access public --ignore-scripts ${{ inputs.dry_run && '--dry-run' || '--provenance' }}
+        run: npm stage publish --access public --ignore-scripts ${{ inputs.dry_run && '--dry-run' || '--provenance' }}
 
       - name: Commit, tag and push
         if: ${{ !inputs.dry_run }}
